@@ -14,16 +14,18 @@ def generate_spiral_array(inner_r, outer_r, turns, current, pts=500, offset=(0,0
 INNER_DIM = 5
 OUTER_DIM = 35
 OFFSET    = 35/2/2 + 2
-TURNS     = 10
+TURNS     = 30
 PADDING   = 1.0
 
 # 2. Generate spiral
 coil_a = generate_spiral_array((INNER_DIM/10)/2, (OUTER_DIM/10)/2, TURNS, current=2.0, offset=(-(OFFSET/10), 0, 0))
-coil_b = generate_spiral_array((INNER_DIM/10)/2, (OUTER_DIM/10)/2, TURNS, current=-2.0, offset=((OFFSET/10), 0, 0))
+# coil_b = generate_spiral_array((INNER_DIM/10)/2, (OUTER_DIM/10)/2, TURNS, current=-2.0, offset=((OFFSET/10), 0, 0))
+
+# coil_up = generate_spiral_array((INNER_DIM/10)/2, (OUTER_DIM/10)/2, TURNS, current=-2.0, offset=(-(OFFSET/10), 0, 3))
+
 
 dual_coil = np.hstack([coil_a])
 chopped_dual_coil = bp.slice_coil(dual_coil, steplength=0.01)
-
 
 
 # Scale the windows
@@ -48,7 +50,8 @@ gs = fig.add_gridspec(3, 2, width_ratios=[1, 1.2])
 # 3d visuals
 ax_3d = fig.add_subplot(gs[:, 0], projection='3d')
 ax_3d.plot(coil_a[0], coil_a[1], coil_a[2], color='tab:blue', lw=2, label="Coil A (+)")
-ax_3d.plot(coil_b[0], coil_b[1], coil_b[2], color='tab:red', lw=2, label="Coil B (-)")
+# ax_3d.plot(coil_b[0], coil_b[1], coil_b[2], color='tab:red', lw=2, label="Coil B (-)")
+# ax_3d.plot(coil_up[0], coil_up[1], coil_up[2], color='tab:gray', lw=2, label="Coil Up")
 
 mid_x, mid_y = (x_max + x_min) / 2, (y_max + y_min) / 2
 max_range = max(box_w, box_h)
