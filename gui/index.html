@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Grid Animation Studio</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { 
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    background: #1a1a2e; color: #e0e0e0; display: flex; height: 100vh; overflow: hidden; 
+  }
+  
+  #sidebar { 
+    width: 280px; background: #16213e; padding: 16px; display: flex;
+    flex-direction: column; gap: 12px; border-right: 1px solid #0f3460;
+    flex-shrink: 0; 
+  }
+  #sidebar h2 { font-size: 16px; color: #e94560; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  #sidebar h3 { font-size: 14px; color: #8bbbe8; margin-bottom: 8px; border-bottom: 1px solid #0f3460; padding-bottom: 4px; }
+  
+  .layer-toggle { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background 0.15s; }
+  .layer-toggle:hover { background: #1a1a3e; }
+  .layer-toggle input { cursor: pointer; transform: scale(1.2); }
+  .layer-swatch { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; }
+  .layer-name { font-weight: 600; font-size: 13px;}
+  
+  #coords { font-size: 12px; color: #888; padding: 8px 0; font-family: monospace; border-top: 1px solid #0f3460; line-height: 1.5; }
+  
+  .action-btn {
+    padding: 8px; border: none; border-radius: 6px; cursor: pointer; 
+    font-weight: bold; color: white; transition: opacity 0.2s; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .action-btn:hover { opacity: 0.8; }
+  .action-btn:active { transform: scale(0.98); }
+  
+  .control-group { display: flex; gap: 8px; margin-bottom: 8px; }
+  .settings-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
+  .settings-row input { background: #0a0a1a; color: white; border: 1px solid #0f3460; padding: 4px; border-radius: 4px; width: 60px; text-align: center; }
+  
+  /* --- Timeline & Frame List UI --- */
+  #timeline-container {
+    display: flex; flex-direction: column; flex: 1; overflow: hidden;
+    border: 1px solid #0f3460; border-radius: 6px; background: #0a0a1a;
+  }
+  #frameList {
+    flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .frame-item {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #16213e; padding: 6px 8px; border-radius: 4px; font-size: 11px;
+    cursor: grab; border: 1px solid #1a1a3e; transition: border 0.2s;
+  }
+  .frame-item:hover { border-color: #8bbbe8; }
+  .frame-item:active { cursor: grabbing; }
+  .frame-item.drag-over { border-top: 2px solid #e94560; padding-top: 8px; } /* Drop target indicator */
+  
+  .frame-item-info { flex: 1; pointer-events: none; }
+  .frame-item-desc { color: #888; font-size: 9px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+  .frame-item-delete {
+    background: #d62728; color: white; border: none; border-radius: 3px;
+    padding: 3px 6px; cursor: pointer; font-size: 10px; margin-left: 8px;
+  }
+  .frame-item-delete:hover { background: #ff4a4a; }
+  
+  #canvas-wrap { flex: 1; position: relative; overflow: hidden; background: #0a0a1a; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>Grid Controller</h2>
+  
+  <div id="layer-toggles">
+    <label class="layer-toggle"><input type="checkbox" id="l1" checked><div class="layer-swatch" style="background:#1f77b4"></div><div class="layer-name">L1 (Base)</div></label>
+    <label class="layer-toggle"><input type="checkbox" id="l2" checked><div class="layer-swatch" style="background:#ff7f0e"></div><div class="layer-name">L2 (1/3 Horiz)</div></label>
+    <label class="layer-toggle"><input type="checkbox" id="l3" checked><div class="layer-swatch" style="background:#2ca02c"></div><div class="layer-name">L3 (2/3 Horiz)</div></label>
+    <label class="layer-toggle"><input type="checkbox" id="l4" checked><div class="layer-swatch" style="background:#d62728"></div><div class="layer-name">L4 (1/3 Vert)</div></label>
+    <label class="layer-toggle"><input type="checkbox" id="l5" checked><div class="layer-swatch" style="background:#9467bd"></div><div class="layer-name">L5 (2/3 Vert)</div></label>
+  </div>
+
+  <div id="coords">Hover: None<br>Row: — | Col: —</div>
+
+  <div class="control-group" style="margin-top: 5px;">
+    <button id="clearBtn" class="action-btn" style="background: #4a4a6a; flex: 1;">Clear Grid</button>
+  </div>
+
+  <div style="margin-top: 10px; display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+    <h3>Animation Studio</h3>
+    
+    <div class="control-group">
+      <button id="saveFrameBtn" class="action-btn" style="background: #e94560; flex: 1;">+ Save Frame</button>
+    </div>
+    
+    <div class="settings-row" style="color: #aaa;">
+      <span id="frameCountDisplay">Frames: 0</span>
+      <div>
+        <label for="delayMs">Delay:</label>
+        <input type="number" id="delayMs" value="300" step="50" min="50">
+      </div>
+    </div>
+
+    <div id="timeline-container">
+      <div id="frameList">
+        </div>
+    </div>
+
+    <div class="control-group" style="margin-top: 8px;">
+      <button id="playBtn" class="action-btn" style="background: #2ca02c; flex: 1;">▶ Play</button>
+      <button id="stopBtn" class="action-btn" style="background: #d62728; flex: 1;">■ Stop</button>
+    </div>
+
+    <div class="control-group" style="margin-top: 4px;">
+      <button id="clearFramesBtn" class="action-btn" style="background: #4a4a6a; flex: 1;">Reset</button>
+      <button id="exportAnimBtn" class="action-btn" style="background: #1f77b4; flex: 1;">Export JSON</button>
+    </div>
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+
+const SQ_SIZE = 80;
+let W, H;
+let panX = 0, panY = 0;
+let zoom = 1.0; 
+let dragging = false, dragStartX, dragStartY, panStartX, panStartY;
+let hoveredSquare = null;
+
+const layerVisibility = { 1: true, 2: true, 3: true, 4: true, 5: true };
+
+// Drawing State
+let selectedSquares = {}; 
+
+// Animation & Timeline State
+let frames = [];
+let isPlaying = false;
+let playbackTimer = null;
+let draggedFrameIndex = null; // For drag and drop reordering
+
+const baseRow = 3;
+const baseCol = 4;
+
+const layersInfo = [
+    { id: 5, name: 'L5 (2/3 Vert)',  dx: 0,   dy: 2/3, rows: baseRow-1, cols: baseCol, c1: '#c4addb', c2: '#9467bd' },
+    { id: 4, name: 'L4 (1/3 Vert)',  dx: 0,   dy: 1/3, rows: baseRow-1, cols: baseCol, c1: '#f09898', c2: '#d62728' },
+    { id: 3, name: 'L3 (2/3 Horiz)', dx: 2/3, dy: 0,   rows: baseRow, cols: baseCol-1, c1: '#92d692', c2: '#2ca02c' },
+    { id: 2, name: 'L2 (1/3 Horiz)', dx: 1/3, dy: 0,   rows: baseRow, cols: baseCol-1, c1: '#ffbf87', c2: '#ff7f0e' },
+    { id: 1, name: 'L1 (Base)',      dx: 0,   dy: 0,   rows: baseRow, cols: baseCol, c1: '#8bbbe8', c2: '#1f77b4' }
+];
+
+function resize() {
+  const rect = wrap.getBoundingClientRect();
+  W = rect.width; H = rect.height;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  ctx.scale(dpr, dpr);
+  
+  if (panX === 0 && panY === 0) {
+      const baseLayer = layersInfo.find(l => l.id === 1);
+      panX = (W - (baseLayer.cols * SQ_SIZE)) / 2;
+      panY = (H - (baseLayer.rows * SQ_SIZE)) / 2;
+  }
+  draw();
+}
+
+function screenToBoard(sx, sy) {
+  return [ (sx - panX) / zoom, (sy - panY) / zoom ];
+}
+
+function getSquareAt(bx, by) {
+    for (let l of layersInfo) {
+        if (!layerVisibility[l.id]) continue;
+        let localX = bx - (l.dx * SQ_SIZE);
+        let localY = by - (l.dy * SQ_SIZE);
+        if (localX >= 0 && localY >= 0) {
+            let c = Math.floor(localX / SQ_SIZE);
+            let r = Math.floor(localY / SQ_SIZE);
+            if (c >= 0 && c < l.cols && r >= 0 && r < l.rows) {
+                return { layer: l.name, r: r, c: c, id: l.id };
+            }
+        }
+    }
+    return null; 
+}
+
+function drawLayer(layerData) {
+    if (!layerVisibility[layerData.id]) return;
+
+    let offsetX = layerData.dx * SQ_SIZE;
+    let offsetY = layerData.dy * SQ_SIZE;
+
+    for (let r = 0; r < layerData.rows; r++) {
+        for (let c = 0; c < layerData.cols; c++) {
+            let x = offsetX + (c * SQ_SIZE);
+            let y = offsetY + (r * SQ_SIZE);
+            let color = (r + c) % 2 === 0 ? layerData.c1 : layerData.c2;
+
+            ctx.fillStyle = color;
+            ctx.globalAlpha = 0.6; 
+            ctx.fillRect(x, y, SQ_SIZE, SQ_SIZE);
+
+            ctx.globalAlpha = 1.0;
+            ctx.strokeStyle = "rgba(0,0,0,0.5)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x, y, SQ_SIZE, SQ_SIZE);
+
+            let uniqueKey = `${layerData.id}_${r}_${c}`;
+            if (selectedSquares[uniqueKey]) {
+                ctx.fillStyle = "rgba(255, 255, 0, 0.5)"; 
+                ctx.fillRect(x, y, SQ_SIZE, SQ_SIZE);
+                ctx.strokeStyle = "#FFFF00"; 
+                ctx.lineWidth = 3;
+                ctx.strokeRect(x + 1.5, y + 1.5, SQ_SIZE - 3, SQ_SIZE - 3);
+            }
+
+            if (!isPlaying && hoveredSquare && hoveredSquare.id === layerData.id && hoveredSquare.r === r && hoveredSquare.c === c) {
+                ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+                ctx.fillRect(x, y, SQ_SIZE, SQ_SIZE);
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x + 1, y + 1, SQ_SIZE - 2, SQ_SIZE - 2);
+            }
+        }
+    }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+
+  for (let i = layersInfo.length - 1; i >= 0; i--) {
+      drawLayer(layersInfo[i]);
+  }
+  ctx.restore();
+}
+
+// --- Timeline UI Logic ---
+
+function renderTimeline() {
+    const listContainer = document.getElementById('frameList');
+    listContainer.innerHTML = ''; // Clear current
+    
+    document.getElementById('frameCountDisplay').innerText = `Frames: ${frames.length}`;
+
+    frames.forEach((frameDict, index) => {
+        const sqKeys = Object.keys(frameDict);
+        const sqCount = sqKeys.length;
+        
+        // Generate a tiny summary string (e.g. "L1_0_0, L2_1_1...")
+        let desc = sqCount > 0 
+            ? sqKeys.slice(0, 3).map(k => `L${frameDict[k].layerId} [${frameDict[k].row},${frameDict[k].col}]`).join(', ') 
+            : "Empty Frame";
+        if (sqCount > 3) desc += " ...";
+
+        // Create the DOM Element
+        const el = document.createElement('div');
+        el.className = 'frame-item';
+        el.draggable = true;
+        
+        el.innerHTML = `
+            <div class="frame-item-info">
+                <strong>Frame ${index + 1}</strong> (${sqCount} sqs)
+                <div class="frame-item-desc">${desc}</div>
+            </div>
+            <button class="frame-item-delete" onclick="deleteFrame(${index}, event)">X</button>
+        `;
+
+        // Click to Preview
+        el.addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON') return; // Ignore if clicking delete
+            stopPlayback();
+            selectedSquares = JSON.parse(JSON.stringify(frames[index]));
+            draw();
+        });
+
+        // --- Drag and Drop Reordering Events ---
+        el.addEventListener('dragstart', (e) => {
+            draggedFrameIndex = index;
+            e.dataTransfer.effectAllowed = 'move';
+            // Subtle visual feedback while dragging
+            setTimeout(() => el.style.opacity = '0.4', 0);
+        });
+        
+        el.addEventListener('dragover', (e) => {
+            e.preventDefault(); // Necessary to allow dropping
+            el.classList.add('drag-over');
+        });
+        
+        el.addEventListener('dragleave', () => {
+            el.classList.remove('drag-over');
+        });
+        
+        el.addEventListener('drop', (e) => {
+            e.preventDefault();
+            el.classList.remove('drag-over');
+            
+            if (draggedFrameIndex !== null && draggedFrameIndex !== index) {
+                // Pluck the dragged frame out of the array
+                const movedFrame = frames.splice(draggedFrameIndex, 1)[0];
+                // Insert it at the new dropped index
+                frames.splice(index, 0, movedFrame);
+                renderTimeline(); // Re-render everything in the new order
+            }
+        });
+        
+        el.addEventListener('dragend', () => {
+            el.style.opacity = '1';
+            draggedFrameIndex = null;
+        });
+
+        listContainer.appendChild(el);
+    });
+}
+
+// Global function so the onclick="deleteFrame(i)" inside innerHTML works
+window.deleteFrame = function(index, event) {
+    event.stopPropagation(); // Don't trigger the preview click
+    frames.splice(index, 1);
+    renderTimeline();
+};
+
+
+// --- Animation Control Logic ---
+
+function stopPlayback() {
+    isPlaying = false;
+    if (playbackTimer) clearTimeout(playbackTimer);
+    playbackTimer = null;
+}
+
+// Save Frame
+document.getElementById('saveFrameBtn').addEventListener('click', () => {
+    const snapshot = JSON.parse(JSON.stringify(selectedSquares));
+    frames.push(snapshot);
+    renderTimeline();
+    
+    // Auto-scroll to the bottom of the timeline
+    const frameList = document.getElementById('frameList');
+    frameList.scrollTop = frameList.scrollHeight;
+});
+
+// Play
+function playNextFrame(frameIndex) {
+    if (!isPlaying) return;
+    
+    if (frameIndex >= frames.length) frameIndex = 0; 
+
+    selectedSquares = JSON.parse(JSON.stringify(frames[frameIndex]));
+    draw();
+
+    // Highlight the actively playing frame in the timeline
+    const frameItems = document.querySelectorAll('.frame-item');
+    frameItems.forEach((el, i) => {
+        el.style.borderColor = i === frameIndex ? '#e94560' : '#1a1a3e';
+    });
+
+    const delay = parseInt(document.getElementById('delayMs').value, 10) || 300;
+    playbackTimer = setTimeout(() => playNextFrame(frameIndex + 1), delay);
+}
+
+document.getElementById('playBtn').addEventListener('click', () => {
+    if (frames.length === 0) { alert("Please save at least 1 frame first!"); return; }
+    if (isPlaying) return; 
+    isPlaying = true;
+    playNextFrame(0);
+});
+
+// Stop & Reset
+document.getElementById('stopBtn').addEventListener('click', () => {
+    stopPlayback();
+    document.querySelectorAll('.frame-item').forEach(el => el.style.borderColor = '#1a1a3e');
+});
+
+document.getElementById('clearFramesBtn').addEventListener('click', () => {
+    stopPlayback();
+    frames = [];
+    renderTimeline();
+});
+
+// Export Animation
+document.getElementById('exportAnimBtn').addEventListener('click', () => {
+    if (frames.length === 0) { alert("No frames to export!"); return; }
+    const cleanFramesData = frames.map(frameDict => Object.values(frameDict));
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(cleanFramesData, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", "grid_animation.json");
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+});
+
+// Current Grid clear
+document.getElementById('clearBtn').addEventListener('click', () => {
+    stopPlayback();
+    selectedSquares = {};
+    draw();
+});
+
+// --- UI Toggles & Mouse Interaction ---
+[1, 2, 3, 4, 5].forEach(id => {
+    document.getElementById(`l${id}`).addEventListener('change', e => { 
+        layerVisibility[id] = e.target.checked; 
+        draw(); 
+    });
+});
+
+canvas.addEventListener('mousemove', e => {
+    if (dragging) {
+        panX = panStartX + (e.offsetX - dragStartX);
+        panY = panStartY + (e.offsetY - dragStartY);
+        draw();
+        return;
+    }
+
+    const [bx, by] = screenToBoard(e.offsetX, e.offsetY);
+    hoveredSquare = getSquareAt(bx, by);
+    
+    const coordsDiv = document.getElementById('coords');
+    if (hoveredSquare) {
+        coordsDiv.innerHTML = `Hover: ${hoveredSquare.layer}<br>Row: ${hoveredSquare.r} | Col: ${hoveredSquare.c}`;
+        if (!isPlaying) canvas.style.cursor = 'pointer';
+    } else {
+        coordsDiv.innerHTML = `Hover: None<br>Row: — | Col: —`;
+        canvas.style.cursor = 'crosshair';
+    }
+    if (!isPlaying) draw(); 
+});
+
+canvas.addEventListener('mousedown', e => {
+    if (isPlaying) stopPlayback();
+
+    if (e.button === 0 && hoveredSquare) {
+        let key = `${hoveredSquare.id}_${hoveredSquare.r}_${hoveredSquare.c}`;
+        if (selectedSquares[key]) delete selectedSquares[key];
+        else {
+            selectedSquares[key] = {
+                layerId: hoveredSquare.id,
+                layerName: hoveredSquare.layer,
+                row: hoveredSquare.r,
+                col: hoveredSquare.c
+            };
+        }
+        draw();
+    } else {
+        dragging = true;
+        dragStartX = e.offsetX; dragStartY = e.offsetY;
+        panStartX = panX; panStartY = panY;
+        canvas.style.cursor = 'grabbing';
+    }
+});
+
+canvas.addEventListener('mouseup', () => { dragging = false; canvas.style.cursor = hoveredSquare && !isPlaying ? 'pointer' : 'crosshair'; });
+canvas.addEventListener('mouseleave', () => { dragging = false; hoveredSquare = null; if(!isPlaying) draw(); });
+
+canvas.addEventListener('wheel', e => {
+    e.preventDefault(); 
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    const mx = e.offsetX; const my = e.offsetY;
+    
+    panX = mx - (mx - panX) * zoomFactor;
+    panY = my - (my - panY) * zoomFactor;
+    zoom *= zoomFactor;
+    draw();
+}, { passive: false });
+
+window.addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>
