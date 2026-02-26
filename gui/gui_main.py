@@ -140,43 +140,39 @@ class ChessBoard(ctk.CTkFrame):
 
 
     def set_layer_visibility(self, layer_level):
-        """1 = Red Base, 2 = Blue Borders, 3 = Green Diagonals"""
-
-        # Layer 1 (Blue Borders)
+        """1 = Red Base, 2 = H Borders, 3 = V Borders, 4 = Diagonals"""
+        
+        # Layer 1 (Red Base)
         if layer_level == 1:
-            for square, x, y in self.nodes:
-                # square.place(x=x, y=y, anchor="center")
-                square.enable()
+            for square, r, c in self.nodes:
+                square.grid(row=r, column=c, sticky="nsew")
         else:
-            for square, x, y in self.nodes:
-                square.disable()
+            for square, r, c in self.nodes:
+                square.grid_remove()
 
-        # Layer 2 (Blue Borders)
+        # Layer 2 (Horizontal Borders)
         if layer_level == 2 and self.boarders:
             for square, x, y in self.h_border_nodes:
-                # square.place(x=x, y=y, anchor="center")
-                square.enable()
+                square.place(x=x, y=y, anchor="center")
         else:
             for square, x, y in self.h_border_nodes:
-                square.disable()
+                square.place_forget() 
 
-        # Layer 3 (Light Blue Diagonals)
+        # Layer 3 (Vertical Borders)
         if layer_level == 3 and self.boarders:
             for square, x, y in self.v_border_nodes:
-                # square.place(x=x, y=y, anchor="center")
-                square.enable()
+                square.place(x=x, y=y, anchor="center")
         else:
             for square, x, y in self.v_border_nodes:
-                square.disable()
+                square.place_forget()
         
         # Layer 4 (Green Diagonals)
         if layer_level == 4 and self.diagonals:
             for square, x, y in self.diagonal_nodes:
-                # square.place(x=x, y=y, anchor="center")
-                square.enable()
+                square.place(x=x, y=y, anchor="center")
         else:
             for square, x, y in self.diagonal_nodes:
-                square.disable()
+                square.place_forget()
 
 
 class DevPanel(ctk.CTkFrame):
@@ -213,7 +209,7 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self.board = ChessBoard(self, boarders=False, diagonals=True)
+        self.board = ChessBoard(self, boarders=True, diagonals=True)
         self.board.grid(row=0, column=0, padx=40, pady=40, sticky="nsew")
 
         self.dev_panel = DevPanel(self, controller=self)
