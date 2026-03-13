@@ -1,0 +1,6 @@
+.env
+.source_hash
+.venv/
+__pycache__/
+build/
+*.pyc
