@@ -105,37 +105,52 @@ public:
 
   // Returns false if invalid bit, or thermal limit prevents pulse
   bool pulseBit(uint8_t globalBit, uint16_t duration_ms) {
+    uint8_t sr = globalBit / 8;
+    uint8_t pin = globalBit % 8;
+
     if (globalBit >= SR_CHAIN_BITS) {
-      LOG_HW("pulseBit: bit %d out of range", globalBit);
+      LOG_HW("pulseBit REJECT: bit %d out of range (max %d)", globalBit, SR_CHAIN_BITS - 1);
       return false;
     }
-    if ((globalBit % 8) >= BITS_PER_SR) {
-      LOG_HW("pulseBit: bit %d is unused (pos %d in SR %d)", globalBit, globalBit % 8, globalBit / 8);
+    if (pin >= BITS_PER_SR) {
+      LOG_HW("pulseBit REJECT: SR%d pin %d is unused (only pins 0-%d connected)", sr, pin, BITS_PER_SR - 1);
       return false;
     }
     if (!canPulse(globalBit)) {
-      LOG_HW("pulseBit: bit %d thermal cooldown", globalBit);
+      unsigned long elapsed = millis() - last_pulse_ms_[globalBit];
+      unsigned long remaining = THERMAL_COOLDOWN_MS - elapsed;
+      LOG_HW("pulseBit REJECT: SR%d pin %d thermal cooldown (%lums remaining of %dms)", sr, pin, remaining, THERMAL_COOLDOWN_MS);
       return false;
     }
 
-    LOG_HW("pulseBit: bit %d for %dms (SR %d pos %d)", globalBit, duration_ms, globalBit / 8, globalBit % 8);
+    LOG_HW("pulseBit START: SR%d pin %d (global bit %d) for %dms", sr, pin, globalBit, duration_ms);
+    LOG_HW("  sr_state before: SR%d = 0x%02X", sr, sr_state_[sr]);
     srSetBit(globalBit, true);
+    LOG_HW("  sr_state after:  SR%d = 0x%02X", sr, sr_state_[sr]);
     srWrite();
     srSetOE(true);
+    LOG_HW("  OE enabled, pulsing for %dms...", duration_ms);
 
     delay(duration_ms);
 
     srSetBit(globalBit, false);
     srWrite();
     srSetOE(false);
+    LOG_HW("  OE disabled, SR%d reset to 0x%02X", sr, sr_state_[sr]);
 
     recordPulse(globalBit);
+    LOG_HW("pulseBit DONE: SR%d pin %d, next allowed in %dms", sr, pin, THERMAL_COOLDOWN_MS);
     return true;
   }
 
   bool canPulse(uint8_t globalBit) {
     if (globalBit >= SR_CHAIN_BITS) return false;
-    return (millis() - last_pulse_ms_[globalBit]) >= THERMAL_COOLDOWN_MS;
+    unsigned long elapsed = millis() - last_pulse_ms_[globalBit];
+    bool ok = elapsed >= THERMAL_COOLDOWN_MS;
+    if (ok) {
+      LOG_HW("thermal check: bit %d OK (idle %lums)", globalBit, elapsed);
+    }
+    return ok;
   }
 
   // ── RGB LED ────────────────────────────────────────────────
