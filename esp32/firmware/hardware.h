@@ -97,16 +97,30 @@ public:
   bool readDC1() { return digitalRead(PIN_DC1); }
   bool readDC2() { return digitalRead(PIN_DC2); }
 
-  // ── Thermal Protection ────────────────────────────────────
+  // ── Coil Pulse ─────────────────────────────────────────────
+
+  // Returns false if thermal limit prevents pulse
+  bool pulseCoil(uint8_t coilBit, uint16_t duration_ms) {
+    if (coilBit >= SR_CHAIN_BITS) return false;
+    if (!canPulse(coilBit)) return false;
+
+    srSetBit(coilBit, true);
+    srWrite();
+    srSetOE(true);
+
+    delay(duration_ms);
+
+    srSetBit(coilBit, false);
+    srWrite();
+    srSetOE(false);
+
+    recordPulse(coilBit);
+    return true;
+  }
 
   bool canPulse(uint8_t coilBit) {
     if (coilBit >= SR_CHAIN_BITS) return false;
     return (millis() - last_pulse_ms_[coilBit]) >= THERMAL_COOLDOWN_MS;
-  }
-
-  void recordPulse(uint8_t coilBit) {
-    if (coilBit >= SR_CHAIN_BITS) return;
-    last_pulse_ms_[coilBit] = millis();
   }
 
   // ── Shutdown ──────────────────────────────────────────────
@@ -122,4 +136,9 @@ private:
   SPIClass spi_;
   uint8_t sr_state_[NUM_SHIFT_REGISTERS];
   unsigned long last_pulse_ms_[SR_CHAIN_BITS];
+
+  void recordPulse(uint8_t coilBit) {
+    if (coilBit >= SR_CHAIN_BITS) return;
+    last_pulse_ms_[coilBit] = millis();
+  }
 };

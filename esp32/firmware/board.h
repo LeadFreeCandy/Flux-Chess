@@ -21,21 +21,12 @@ public:
       return res;
     }
 
-    // TODO: Map (x, y) to shift register bit index
-    // For now, just validate and return success
-    // uint8_t coilBit = gridToCoilBit(x, y);
-    // if (!hw_.canPulse(coilBit)) {
+    // TODO: populate grid mapping table
+    // uint8_t coilBit = grid_to_coil_[x][y];
+    // if (!hw_.pulseCoil(coilBit, duration_ms)) {
     //   res.error = PulseError::THERMAL_LIMIT;
     //   return res;
     // }
-    // hw_.srSetBit(coilBit, true);
-    // hw_.srWrite();
-    // hw_.srSetOE(true);
-    // delay(duration_ms);
-    // hw_.srSetBit(coilBit, false);
-    // hw_.srWrite();
-    // hw_.srSetOE(false);
-    // hw_.recordPulse(coilBit);
 
     res.success = true;
     return res;
