@@ -1,6 +1,8 @@
 #include "api.h"
 #include <ArduinoJson.h>
 
+// ── Handlers ──────────────────────────────────────────────────
+
 PulseCoilResponse handle_pulse_coil(const PulseCoilRequest& req) {
   PulseCoilResponse res = { false, PulseError::NONE };
   if (req.x >= GRID_COLS || req.y >= GRID_ROWS) {
@@ -36,17 +38,32 @@ static const char* pulse_error_str(PulseError e) {
   return "NONE";
 }
 
+// ── Serial ────────────────────────────────────────────────────
+
+String lineBuf;
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  Serial.println("{\"type\":\"ready\"}");
 }
 
 void loop() {
-  if (!Serial.available()) return;
-  String line = Serial.readStringUntil('\n');
-  line.trim();
-  if (line.isEmpty()) return;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      lineBuf.trim();
+      if (lineBuf.length() > 0) {
+        handleCommand(lineBuf);
+      }
+      lineBuf = "";
+    } else {
+      lineBuf += c;
+    }
+  }
+}
 
+void handleCommand(const String& line) {
   JsonDocument req_doc;
   if (deserializeJson(req_doc, line)) return;
 
@@ -64,6 +81,7 @@ void loop() {
     auto res = handle_pulse_coil(req);
     res_doc["result"]["success"] = res.success;
     res_doc["result"]["error"] = pulse_error_str(res.error);
+
   } else if (strcmp(method, "get_board_state") == 0) {
     auto res = handle_get_board_state();
     JsonArray strengths = res_doc["result"]["raw_strengths"].to<JsonArray>();
@@ -74,6 +92,7 @@ void loop() {
       }
     }
     res_doc["result"]["piece_count"] = res.piece_count;
+
   } else if (strcmp(method, "set_rgb") == 0) {
     SetRGBRequest req = {};
     req.r = req_doc["params"]["r"] | 0;
@@ -81,6 +100,7 @@ void loop() {
     req.b = req_doc["params"]["b"] | 0;
     auto res = handle_set_rgb(req);
     res_doc["result"]["success"] = res.success;
+
   } else if (strcmp(method, "shutdown") == 0) {
     res_doc["result"].to<JsonObject>();
     String out;
@@ -89,6 +109,7 @@ void loop() {
     delay(100);
     ESP.restart();
     return;
+
   } else {
     res_doc["error"] = "unknown command";
   }
