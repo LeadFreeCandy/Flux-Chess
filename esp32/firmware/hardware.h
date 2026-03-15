@@ -130,6 +130,9 @@ public:
   // ── RGB LED ────────────────────────────────────────────────
 
   void setRGB(uint8_t r, uint8_t g, uint8_t b) {
+    // Pin 48 is shared with SR OE — clear SR outputs first
+    // so the OE glitching during neopixel write doesn't pulse coils
+    srClear();
     neopixelWrite(PIN_RGB_LED, r, g, b);
   }
 
