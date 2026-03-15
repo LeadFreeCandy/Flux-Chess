@@ -3,7 +3,8 @@ export interface Transport {
 }
 
 // Serial log for the raw console
-export type SerialLogEntry = { dir: "tx" | "rx"; data: string; ts: number };
+export type LogLevel = "hw" | "board" | "io" | "error";
+export type SerialLogEntry = { dir: "tx" | "rx"; data: string; ts: number; level: LogLevel };
 type LogListener = (entry: SerialLogEntry) => void;
 const listeners: LogListener[] = [];
 
@@ -11,8 +12,19 @@ export function onSerialLog(fn: LogListener): () => void {
   listeners.push(fn);
   return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); };
 }
+function classifyLevel(dir: "tx" | "rx", data: string): LogLevel {
+  if (dir === "tx") return "io";
+  try {
+    const msg = JSON.parse(data);
+    if (msg.type === "log") return msg.level === "hw" ? "hw" : "board";
+    if (msg.error) return "error";
+  } catch {}
+  return "io";
+}
+
 export function emitLog(dir: "tx" | "rx", data: string) {
-  const entry = { dir, data, ts: Date.now() };
+  const level = classifyLevel(dir, data);
+  const entry = { dir, data, ts: Date.now(), level };
   listeners.forEach(fn => fn(entry));
 }
 

@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include "pins.h"
+#include "utils.h"
 
 // Minimum milliseconds between pulses on the same coil
 #define THERMAL_COOLDOWN_MS 500
@@ -38,6 +39,7 @@ public:
 
     // Blank shift registers
     srClear();
+    LOG_HW("init: SPI on CLK=%d DATA=%d, %d SRs, %d hall sensors", PIN_SR_CLOCK, PIN_SR_DATA, NUM_SHIFT_REGISTERS, NUM_HALL_SENSORS);
   }
 
   // ── Shift Registers (SPI) ──────────────────────────────────
@@ -103,11 +105,20 @@ public:
 
   // Returns false if invalid bit, or thermal limit prevents pulse
   bool pulseBit(uint8_t globalBit, uint16_t duration_ms) {
-    if (globalBit >= SR_CHAIN_BITS) return false;
-    // Reject bits 5-7 within each SR (unused/not connected)
-    if ((globalBit % 8) >= BITS_PER_SR) return false;
-    if (!canPulse(globalBit)) return false;
+    if (globalBit >= SR_CHAIN_BITS) {
+      LOG_HW("pulseBit: bit %d out of range", globalBit);
+      return false;
+    }
+    if ((globalBit % 8) >= BITS_PER_SR) {
+      LOG_HW("pulseBit: bit %d is unused (pos %d in SR %d)", globalBit, globalBit % 8, globalBit / 8);
+      return false;
+    }
+    if (!canPulse(globalBit)) {
+      LOG_HW("pulseBit: bit %d thermal cooldown", globalBit);
+      return false;
+    }
 
+    LOG_HW("pulseBit: bit %d for %dms (SR %d pos %d)", globalBit, duration_ms, globalBit / 8, globalBit % 8);
     srSetBit(globalBit, true);
     srWrite();
     srSetOE(true);
@@ -130,8 +141,7 @@ public:
   // ── RGB LED ────────────────────────────────────────────────
 
   void setRGB(uint8_t r, uint8_t g, uint8_t b) {
-    // Pin 48 is shared with SR OE — clear SR outputs first
-    // so the OE glitching during neopixel write doesn't pulse coils
+    LOG_HW("setRGB(%d, %d, %d)", r, g, b);
     srClear();
     neopixelWrite(PIN_RGB_LED, r, g, b);
   }
@@ -139,6 +149,7 @@ public:
   // ── Shutdown ──────────────────────────────────────────────
 
   void shutdown() {
+    LOG_HW("shutdown: blanking SR, disabling OE, restarting");
     srClear();
     srSetOE(false);
     delay(50);

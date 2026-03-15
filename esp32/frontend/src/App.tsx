@@ -6,17 +6,38 @@ import {
   shutdown,
   type GetBoardStateResponse,
 } from "./generated/api";
-import { onSerialLog, type SerialLogEntry } from "./transport";
+import { onSerialLog, type SerialLogEntry, type LogLevel } from "./transport";
 import SurfacePlot from "./SurfacePlot";
 
 // ── Serial Console ────────────────────────────────────────────
 
+// Filter levels (each includes everything below it):
+// 0: Everything (hw + board + io + errors)
+// 1: Board + IO + errors (no hw)
+// 2: IO only (TX/RX commands, no logs)
+// 3: Errors only
+const FILTER_LABELS = ["All", "Board+", "IO", "Errors"];
+const FILTER_PASS: Record<number, Set<LogLevel>> = {
+  0: new Set(["hw", "board", "io", "error"]),
+  1: new Set(["board", "io", "error"]),
+  2: new Set(["io", "error"]),
+  3: new Set(["error"]),
+};
+
+const LOG_COLORS: Record<LogLevel, string> = {
+  hw: "#7e57c2",
+  board: "#ffb74d",
+  io: "#81c784",
+  error: "#ef5350",
+};
+
 function SerialConsole() {
   const [logs, setLogs] = useState<SerialLogEntry[]>([]);
+  const [filter, setFilter] = useState(0);
 
   useEffect(() => {
     return onSerialLog((entry) => {
-      setLogs((prev) => [...prev.slice(-200), entry]);
+      setLogs((prev) => [...prev.slice(-500), entry]);
     });
   }, []);
 
@@ -24,35 +45,57 @@ function SerialConsole() {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    // Only auto-scroll if already near the bottom
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, filter]);
+
+  const filtered = logs.filter((e) => FILTER_PASS[filter].has(e.level));
 
   return (
-    <div ref={containerRef} style={{
-      background: "#0a0a0a",
-      border: "1px solid #333",
-      borderRadius: 8,
-      padding: 12,
-      height: 200,
-      overflowY: "auto",
-      fontFamily: "monospace",
-      fontSize: 12,
-    }}>
-      {logs.length === 0 && <span style={{ color: "#555" }}>Waiting for serial data...</span>}
-      {logs.map((entry, i) => (
-        <div key={i} style={{ color: entry.dir === "tx" ? "#4fc3f7" : "#81c784" }}>
-          <span style={{ color: "#666" }}>
-            {new Date(entry.ts).toLocaleTimeString("en", { hour12: false, fractionalSecondDigits: 3 })}
-          </span>
-          {" "}
-          <span style={{ fontWeight: "bold" }}>{entry.dir === "tx" ? "TX" : "RX"}</span>
-          {" "}
-          {entry.data}
-        </div>
-      ))}
+    <div>
+      <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+        {FILTER_LABELS.map((label, i) => (
+          <button
+            key={i}
+            onClick={() => setFilter(i)}
+            style={{
+              ...btnStyle,
+              padding: "3px 10px",
+              fontSize: 11,
+              background: filter === i ? "#1565c0" : "#1a1a2e",
+              border: "1px solid #333",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div ref={containerRef} style={{
+        background: "#0a0a0a",
+        border: "1px solid #333",
+        borderRadius: 8,
+        padding: 12,
+        height: 200,
+        overflowY: "auto",
+        fontFamily: "monospace",
+        fontSize: 12,
+      }}>
+        {filtered.length === 0 && <span style={{ color: "#555" }}>No messages at this filter level</span>}
+        {filtered.map((entry, i) => (
+          <div key={i} style={{ color: entry.dir === "tx" ? "#4fc3f7" : LOG_COLORS[entry.level] }}>
+            <span style={{ color: "#555" }}>
+              {new Date(entry.ts).toLocaleTimeString("en", { hour12: false, fractionalSecondDigits: 3 })}
+            </span>
+            {" "}
+            <span style={{ fontWeight: "bold", minWidth: 40, display: "inline-block" }}>
+              {entry.dir === "tx" ? "TX" : entry.level.toUpperCase()}
+            </span>
+            {" "}
+            {entry.data}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -2,6 +2,17 @@
 #include <Arduino.h>
 
 // ══════════════════════════════════════════════════════════════
+// Logging — always emits, frontend filters by level
+//
+// Usage:
+//   LOG_HW("SR write: %d bytes", count);
+//   LOG_BOARD("pulseCoil(%d, %d, %d)", x, y, dur);
+// ══════════════════════════════════════════════════════════════
+
+#define LOG_HW(fmt, ...)    Serial.printf("{\"type\":\"log\",\"level\":\"hw\",\"msg\":\"" fmt "\"}\n", ##__VA_ARGS__)
+#define LOG_BOARD(fmt, ...)  Serial.printf("{\"type\":\"log\",\"level\":\"board\",\"msg\":\"" fmt "\"}\n", ##__VA_ARGS__)
+
+// ══════════════════════════════════════════════════════════════
 // FLUX_ENUM — define an enum class with automatic toJson
 //
 // Usage:

@@ -12,22 +12,27 @@ public:
     PulseCoilResponse res = { false, PulseError::NONE };
 
     if (x >= GRID_COLS || y >= GRID_ROWS) {
+      LOG_BOARD("pulseCoil(%d,%d,%d): out of bounds", x, y, duration_ms);
       res.error = PulseError::INVALID_COIL;
       return res;
     }
 
     if (duration_ms > MAX_PULSE_MS) {
+      LOG_BOARD("pulseCoil(%d,%d,%d): too long (max %d)", x, y, duration_ms, MAX_PULSE_MS);
       res.error = PulseError::PULSE_TOO_LONG;
       return res;
     }
 
     int8_t bit = coordToBit(x, y);
     if (bit < 0) {
+      LOG_BOARD("pulseCoil(%d,%d,%d): no coil at position", x, y, duration_ms);
       res.error = PulseError::INVALID_COIL;
       return res;
     }
 
+    LOG_BOARD("pulseCoil(%d,%d,%d) -> bit %d", x, y, duration_ms, bit);
     if (!hw_.pulseBit((uint8_t)bit, duration_ms)) {
+      LOG_BOARD("pulseCoil(%d,%d,%d): hw refused (thermal)", x, y, duration_ms);
       res.error = PulseError::THERMAL_LIMIT;
       return res;
     }
@@ -57,6 +62,7 @@ public:
   // ── RGB ───────────────────────────────────────────────────
 
   SetRGBResponse setRGB(uint8_t r, uint8_t g, uint8_t b) {
+    LOG_BOARD("setRGB(%d, %d, %d)", r, g, b);
     hw_.setRGB(r, g, b);
     return { true };
   }
@@ -70,7 +76,7 @@ public:
 
   // ── System ────────────────────────────────────────────────
 
-  void shutdown() { hw_.shutdown(); }
+  void shutdown() { LOG_BOARD("shutdown"); hw_.shutdown(); }
 
 private:
   Hardware hw_;
