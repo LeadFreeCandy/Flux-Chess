@@ -127,6 +127,12 @@ public:
     return (millis() - last_pulse_ms_[globalBit]) >= THERMAL_COOLDOWN_MS;
   }
 
+  // ── RGB LED ────────────────────────────────────────────────
+
+  void setRGB(uint8_t r, uint8_t g, uint8_t b) {
+    neopixelWrite(PIN_RGB_LED, r, g, b);
+  }
+
   // ── Shutdown ──────────────────────────────────────────────
 
   void shutdown() {

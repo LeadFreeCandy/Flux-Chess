@@ -46,6 +46,10 @@ static const uint8_t HALL_PINS[NUM_HALL_SENSORS] = {
 #define PIN_DC1   38   // U17.35 → DC1.2
 #define PIN_DC2   37   // U17.34 → DC2.2
 
+// ── RGB LED ───────────────────────────────────────────────────
+
+#define PIN_RGB_LED  48   // Onboard NeoPixel
+
 // ── Shift Register Grid Mapping ─────────────────────────────
 // Maps grid position [row][col] to shift register bit index
 // 12 SRs × 4 outputs = 96 total bits

@@ -57,7 +57,7 @@ public:
   // ── RGB ───────────────────────────────────────────────────
 
   SetRGBResponse setRGB(uint8_t r, uint8_t g, uint8_t b) {
-    (void)r; (void)g; (void)b;
+    hw_.setRGB(r, g, b);
     return { true };
   }
 
