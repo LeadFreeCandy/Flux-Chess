@@ -3,7 +3,7 @@
 #include <functional>
 #include "board.h"
 
-// ── JSON Helpers (free functions, reusable by future web server) ──
+// ── JSON Parse Helpers (reusable by future web server) ────────
 
 inline String jsonGet(const String& json, const char* key) {
   String search = String("\"") + key + "\"";
@@ -37,16 +37,6 @@ inline String jsonGetObj(const String& json, const char* key) {
   return "";
 }
 
-inline String pulseErrorStr(PulseError e) {
-  switch (e) {
-    case PulseError::NONE: return "NONE";
-    case PulseError::INVALID_COIL: return "INVALID_COIL";
-    case PulseError::PULSE_TOO_LONG: return "PULSE_TOO_LONG";
-    case PulseError::THERMAL_LIMIT: return "THERMAL_LIMIT";
-  }
-  return "NONE";
-}
-
 // ── Command Registry ──────────────────────────────────────────
 
 using CommandHandler = std::function<String(Board& board, const String& params)>;
@@ -59,43 +49,27 @@ struct Command {
 // ── Built-in command handlers ─────────────────────────────────
 
 inline String handlePulseCoil(Board& board, const String& params) {
-  int x = jsonGet(params, "x").toInt();
-  int y = jsonGet(params, "y").toInt();
-  int dur = jsonGet(params, "duration_ms").toInt();
-  auto res = board.pulseCoil(x, y, dur);
-  return String("{\"success\":") + (res.success ? "true" : "false") +
-         ",\"error\":\"" + pulseErrorStr(res.error) + "\"}";
+  uint8_t x = jsonGet(params, "x").toInt();
+  uint8_t y = jsonGet(params, "y").toInt();
+  uint16_t dur = jsonGet(params, "duration_ms").toInt();
+  return board.pulseCoil(x, y, dur).toJson();
 }
 
 inline String handleGetBoardState(Board& board, const String& params) {
   (void)params;
-  auto res = board.getBoardState();
-  String json = "{\"raw_strengths\":[";
-  for (int x = 0; x < GRID_COLS; x++) {
-    json += "[";
-    for (int y = 0; y < GRID_ROWS; y++) {
-      json += String(res.raw_strengths[x][y]);
-      if (y < GRID_ROWS - 1) json += ",";
-    }
-    json += "]";
-    if (x < GRID_COLS - 1) json += ",";
-  }
-  json += "],\"piece_count\":" + String(res.piece_count) + "}";
-  return json;
+  return board.getBoardState().toJson();
 }
 
 inline String handleSetRGB(Board& board, const String& params) {
-  int r = jsonGet(params, "r").toInt();
-  int g = jsonGet(params, "g").toInt();
-  int b = jsonGet(params, "b").toInt();
-  auto res = board.setRGB(r, g, b);
-  return String("{\"success\":") + (res.success ? "true" : "false") + "}";
+  uint8_t r = jsonGet(params, "r").toInt();
+  uint8_t g = jsonGet(params, "g").toInt();
+  uint8_t b = jsonGet(params, "b").toInt();
+  return board.setRGB(r, g, b).toJson();
 }
 
 inline String handleShutdown(Board& board, const String& params) {
   (void)params;
-  // Shutdown happens after response is sent (see SerialServer::handleCommand)
-  return "{}";
+  return ShutdownResponse{}.toJson();
 }
 
 // ── Serial Server ─────────────────────────────────────────────
@@ -103,7 +77,6 @@ inline String handleShutdown(Board& board, const String& params) {
 class SerialServer {
 public:
   SerialServer(Board& board) : board_(board), num_commands_(0) {
-    // Register built-in commands
     on("pulse_coil", handlePulseCoil);
     on("get_board_state", handleGetBoardState);
     on("set_rgb", handleSetRGB);
@@ -151,7 +124,6 @@ private:
         Serial.printf("{\"method\":\"%s\",\"result\":%s}\n",
                       commands_[i].name, result.c_str());
 
-        // Special case: shutdown after response is sent
         if (method == "shutdown") {
           delay(50);
           board_.shutdown();

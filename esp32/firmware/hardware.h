@@ -1,17 +1,23 @@
 #pragma once
 #include <Arduino.h>
+#include <SPI.h>
 #include "pins.h"
 
 // Minimum milliseconds between pulses on the same coil
 #define THERMAL_COOLDOWN_MS 500
 
+// SPI clock for shift registers (74HC595 max ~25MHz, use 4MHz for safety)
+#define SR_SPI_FREQ 4000000
+
 class Hardware {
 public:
-  Hardware() {
-    // Shift register pins
-    pinMode(PIN_SR_DATA, OUTPUT);
-    pinMode(PIN_SR_CLOCK, OUTPUT);
+  Hardware() : spi_(FSPI) {
+    // SPI for shift registers: MOSI=DATA, CLK=CLOCK, no MISO
+    spi_.begin(PIN_SR_CLOCK, -1, PIN_SR_DATA, -1);
+
+    // Latch and OE are manual GPIO
     pinMode(PIN_SR_LATCH, OUTPUT);
+    digitalWrite(PIN_SR_LATCH, LOW);
     pinMode(PIN_SR_OE, OUTPUT);
     digitalWrite(PIN_SR_OE, HIGH);  // OE active low — start disabled
 
@@ -34,18 +40,16 @@ public:
     srClear();
   }
 
-  // ── Shift Registers ───────────────────────────────────────
+  // ── Shift Registers (SPI) ──────────────────────────────────
 
   void srWrite() {
-    // Shift out all bytes, MSB first, last SR first (chain order)
+    spi_.beginTransaction(SPISettings(SR_SPI_FREQ, MSBFIRST, SPI_MODE0));
+    // Send last SR first (end of chain shifts out first)
     for (int i = NUM_SHIFT_REGISTERS - 1; i >= 0; i--) {
-      for (int bit = 7; bit >= 0; bit--) {
-        digitalWrite(PIN_SR_DATA, (sr_state_[i] >> bit) & 1);
-        digitalWrite(PIN_SR_CLOCK, HIGH);
-        digitalWrite(PIN_SR_CLOCK, LOW);
-      }
+      spi_.transfer(sr_state_[i]);
     }
-    // Latch
+    spi_.endTransaction();
+    // Latch: pulse high to transfer shift register to output
     digitalWrite(PIN_SR_LATCH, HIGH);
     digitalWrite(PIN_SR_LATCH, LOW);
   }
@@ -115,6 +119,7 @@ public:
   }
 
 private:
+  SPIClass spi_;
   uint8_t sr_state_[NUM_SHIFT_REGISTERS];
   unsigned long last_pulse_ms_[SR_CHAIN_BITS];
 };
