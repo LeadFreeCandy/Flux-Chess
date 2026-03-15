@@ -13,7 +13,6 @@ import SurfacePlot from "./SurfacePlot";
 
 function SerialConsole() {
   const [logs, setLogs] = useState<SerialLogEntry[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     return onSerialLog((entry) => {
@@ -21,16 +20,18 @@ function SerialConsole() {
     });
   }, []);
 
+  const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    // Auto-scroll only if already near the bottom (don't steal focus)
-    const el = bottomRef.current?.parentElement;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 60) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const el = containerRef.current;
+    if (!el) return;
+    // Only auto-scroll if already near the bottom
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [logs]);
 
   return (
-    <div style={{
+    <div ref={containerRef} style={{
       background: "#0a0a0a",
       border: "1px solid #333",
       borderRadius: 8,
@@ -52,7 +53,6 @@ function SerialConsole() {
           {entry.data}
         </div>
       ))}
-      <div ref={bottomRef} />
     </div>
   );
 }
@@ -96,7 +96,7 @@ function CoilGrid({ pulseDuration, onStatus }: {
   };
 
   return (
-    <div style={{ display: "inline-grid", gridTemplateColumns: `repeat(${GRID_COLS}, 36px)`, gap: 3 }}>
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${GRID_COLS}, 1fr)`, gap: 3, maxWidth: 520, margin: "0 auto" }}>
       {Array.from({ length: GRID_ROWS }, (_, y) =>
         Array.from({ length: GRID_COLS }, (_, x) => {
           const ry = GRID_ROWS - 1 - y;
@@ -110,8 +110,8 @@ function CoilGrid({ pulseDuration, onStatus }: {
               onClick={() => coil && handleClick(x, ry)}
               title={coil ? `Pulse (${x}, ${ry})` : ""}
               style={{
-                width: 36,
-                height: 28,
+                width: "100%",
+                height: 30,
                 border: coil ? "1px solid #3a5a7c" : "1px solid transparent",
                 borderRadius: 4,
                 background: isPulsing ? "#f57f17" : coil ? "#1a3a5c" : "transparent",
