@@ -4,7 +4,6 @@ import {
   getBoardState,
   setRgb,
   shutdown,
-  type PulseCoilResponse,
   type GetBoardStateResponse,
 } from "./generated/api";
 import { onSerialLog, type SerialLogEntry } from "./transport";
@@ -54,14 +53,87 @@ function SerialConsole() {
   );
 }
 
+// ── Coil Grid ─────────────────────────────────────────────────
+
+const GRID_COLS = 10;
+const GRID_ROWS = 7;
+const SR_BLOCK = 3;
+const SR_COLS = 4;
+const SR_ROWS = 3;
+
+function hasCoil(x: number, y: number): boolean {
+  if (x >= GRID_COLS || y >= GRID_ROWS) return false;
+  const srCol = Math.floor(x / SR_BLOCK);
+  const srRow = Math.floor(y / SR_BLOCK);
+  if (srCol >= SR_COLS || srRow >= SR_ROWS) return false;
+  const lx = x % SR_BLOCK;
+  const ly = y % SR_BLOCK;
+  if (ly === 0) return true;           // bottom row of L
+  if (lx === 0 && ly > 0) return true; // left column of L
+  return false;
+}
+
+function CoilGrid({ pulseDuration, onStatus }: {
+  pulseDuration: number;
+  onStatus: (s: string) => void;
+}) {
+  const [pulsing, setPulsing] = useState<string | null>(null);
+
+  const handleClick = async (x: number, y: number) => {
+    const key = `${x},${y}`;
+    setPulsing(key);
+    try {
+      const res = await pulseCoil({ x, y, duration_ms: pulseDuration });
+      onStatus(res.success ? `Pulsed (${x},${y})` : `Error: ${res.error}`);
+    } catch (e) {
+      onStatus(`Error: ${e}`);
+    }
+    setPulsing(null);
+  };
+
+  return (
+    <div style={{ display: "inline-grid", gridTemplateColumns: `repeat(${GRID_COLS}, 1fr)`, gap: 2 }}>
+      {Array.from({ length: GRID_ROWS }, (_, y) =>
+        Array.from({ length: GRID_COLS }, (_, x) => {
+          const coil = hasCoil(x, GRID_ROWS - 1 - y); // flip Y so row 0 is at bottom
+          const ry = GRID_ROWS - 1 - y;
+          const key = `${x},${ry}`;
+          const isPulsing = pulsing === key;
+          return (
+            <button
+              key={key}
+              disabled={!coil}
+              onClick={() => coil && handleClick(x, ry)}
+              title={coil ? `(${x}, ${ry})` : ""}
+              style={{
+                width: 32,
+                height: 32,
+                border: "1px solid",
+                borderColor: coil ? "#444" : "#1a1a2e",
+                borderRadius: 4,
+                background: isPulsing ? "#f57f17" : coil ? "#1a3a5c" : "#0d0d1a",
+                color: coil ? "#4fc3f7" : "transparent",
+                fontSize: 8,
+                cursor: coil ? "pointer" : "default",
+                fontFamily: "inherit",
+                padding: 0,
+                transition: "background 0.15s",
+              }}
+            >
+              {coil ? `${x},${ry}` : ""}
+            </button>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────
 
 function App() {
   const [boardState, setBoardState] = useState<GetBoardStateResponse | null>(null);
   const [polling, setPolling] = useState(false);
-  const [pulseResult, setPulseResult] = useState<PulseCoilResponse | null>(null);
-  const [pulseX, setPulseX] = useState(0);
-  const [pulseY, setPulseY] = useState(0);
   const [pulseDuration, setPulseDuration] = useState(100);
   const [rgb, setRgbState] = useState({ r: 0, g: 0, b: 0 });
   const [status, setStatus] = useState("Connected");
@@ -89,14 +161,6 @@ function App() {
       setPolling(true);
       pollBoardState();
     }
-  };
-
-  const handlePulseCoil = async () => {
-    try {
-      const res = await pulseCoil({ x: pulseX, y: pulseY, duration_ms: pulseDuration });
-      setPulseResult(res);
-      setStatus(res.success ? "Pulse sent" : `Pulse error: ${res.error}`);
-    } catch (e) { setStatus(`Error: ${e}`); }
   };
 
   const handleSetRgb = async () => {
@@ -154,58 +218,44 @@ function App() {
           )}
         </div>
 
-        {/* Controls Row */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-          {/* Pulse Coil */}
-          <div style={cardStyle}>
-            <h2 style={headingStyle}>Pulse Coil</h2>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <label style={labelStyle}>
-                X <input type="number" value={pulseX} min={0} max={9}
-                  style={inputStyle} onChange={(e) => setPulseX(Number(e.target.value))} />
-              </label>
-              <label style={labelStyle}>
-                Y <input type="number" value={pulseY} min={0} max={6}
-                  style={inputStyle} onChange={(e) => setPulseY(Number(e.target.value))} />
-              </label>
-              <label style={labelStyle}>
-                ms <input type="number" value={pulseDuration} min={1} max={1000}
-                  style={{ ...inputStyle, width: 70 }} onChange={(e) => setPulseDuration(Number(e.target.value))} />
-              </label>
-              <button onClick={handlePulseCoil} style={btnStyle}>Pulse</button>
-            </div>
-            {pulseResult && (
-              <div style={{ marginTop: 8, fontSize: 12, color: pulseResult.success ? "#81c784" : "#ef5350" }}>
-                {pulseResult.success ? "OK" : pulseResult.error}
-              </div>
-            )}
+        {/* Coil Grid */}
+        <div style={cardStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h2 style={headingStyle}>Coil Grid</h2>
+            <label style={labelStyle}>
+              Pulse duration
+              <input type="number" value={pulseDuration} min={1} max={1000}
+                style={{ ...inputStyle, width: 70 }} onChange={(e) => setPulseDuration(Number(e.target.value))} />
+              <span style={{ color: "#555" }}>ms</span>
+            </label>
           </div>
+          <CoilGrid pulseDuration={pulseDuration} onStatus={setStatus} />
+        </div>
 
-          {/* RGB */}
-          <div style={cardStyle}>
-            <h2 style={headingStyle}>RGB Underglow</h2>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <label style={labelStyle}>
-                R <input type="number" value={rgb.r} min={0} max={255}
-                  style={{ ...inputStyle, width: 55 }} onChange={(e) => setRgbState({ ...rgb, r: Number(e.target.value) })} />
-              </label>
-              <label style={labelStyle}>
-                G <input type="number" value={rgb.g} min={0} max={255}
-                  style={{ ...inputStyle, width: 55 }} onChange={(e) => setRgbState({ ...rgb, g: Number(e.target.value) })} />
-              </label>
-              <label style={labelStyle}>
-                B <input type="number" value={rgb.b} min={0} max={255}
-                  style={{ ...inputStyle, width: 55 }} onChange={(e) => setRgbState({ ...rgb, b: Number(e.target.value) })} />
-              </label>
-              <button onClick={handleSetRgb} style={btnStyle}>Set</button>
-            </div>
-            <div style={{
-              marginTop: 8,
-              height: 8,
-              borderRadius: 4,
-              background: `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
-            }} />
+        {/* RGB */}
+        <div style={cardStyle}>
+          <h2 style={headingStyle}>RGB Underglow</h2>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <label style={labelStyle}>
+              R <input type="number" value={rgb.r} min={0} max={255}
+                style={{ ...inputStyle, width: 55 }} onChange={(e) => setRgbState({ ...rgb, r: Number(e.target.value) })} />
+            </label>
+            <label style={labelStyle}>
+              G <input type="number" value={rgb.g} min={0} max={255}
+                style={{ ...inputStyle, width: 55 }} onChange={(e) => setRgbState({ ...rgb, g: Number(e.target.value) })} />
+            </label>
+            <label style={labelStyle}>
+              B <input type="number" value={rgb.b} min={0} max={255}
+                style={{ ...inputStyle, width: 55 }} onChange={(e) => setRgbState({ ...rgb, b: Number(e.target.value) })} />
+            </label>
+            <button onClick={handleSetRgb} style={btnStyle}>Set</button>
           </div>
+          <div style={{
+            marginTop: 8,
+            height: 8,
+            borderRadius: 4,
+            background: `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
+          }} />
         </div>
 
         {/* Serial Console */}
