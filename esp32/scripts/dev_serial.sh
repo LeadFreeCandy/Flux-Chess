@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/.env"
 
-FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom"
+FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=custom"
 BUILD_DIR="$ROOT/build"
 
 echo "==> Running codegen..."
@@ -20,7 +20,7 @@ if [ ! -f "$HASH_FILE" ] || [ "$SRC_HASH" != "$(cat "$HASH_FILE")" ]; then
   arduino-cli compile \
     --fqbn "$FQBN" \
     --build-path "$BUILD_DIR" \
-    --build-property "build.extra_flags=-DWIFI_SSID=\"$WIFI_SSID\" -DWIFI_PASSWORD=\"$WIFI_PASSWORD\"" \
+    --build-property "build.extra_flags=-DESP32 -DWIFI_SSID=\"$WIFI_SSID\" -DWIFI_PASSWORD=\"$WIFI_PASSWORD\"" \
     "$ROOT/firmware"
   arduino-cli upload \
     --fqbn "$FQBN" \
