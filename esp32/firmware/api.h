@@ -3,8 +3,8 @@
 #include "macros.h"
 
 // ── Grid Constants ────────────────────────────────────────────
-constexpr uint8_t GRID_COLS = 12;  // 4 SR columns × 3 positions
-constexpr uint8_t GRID_ROWS = 9;   // 3 SR rows × 3 positions
+constexpr uint8_t GRID_COLS = 10;  // 3 full SR columns + 1 partial
+constexpr uint8_t GRID_ROWS = 7;   // 2 full SR rows + 1 partial
 constexpr uint8_t MAX_PIECES = 32;
 constexpr uint16_t MAX_PULSE_MS = 1000;
 
