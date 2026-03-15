@@ -2,8 +2,8 @@
 #include <Arduino.h>
 
 // ── Grid Constants ────────────────────────────────────────────
-constexpr uint8_t GRID_COLS = 10;
-constexpr uint8_t GRID_ROWS = 7;
+constexpr uint8_t GRID_COLS = 12;  // 4 SR columns × 3 positions
+constexpr uint8_t GRID_ROWS = 9;   // 3 SR rows × 3 positions
 constexpr uint8_t MAX_PIECES = 32;
 constexpr uint16_t MAX_PULSE_MS = 1000;
 

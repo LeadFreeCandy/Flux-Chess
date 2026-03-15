@@ -99,28 +99,32 @@ public:
 
   // ── Coil Pulse ─────────────────────────────────────────────
 
-  // Returns false if thermal limit prevents pulse
-  bool pulseCoil(uint8_t coilBit, uint16_t duration_ms) {
-    if (coilBit >= SR_CHAIN_BITS) return false;
-    if (!canPulse(coilBit)) return false;
+  static const uint8_t BITS_PER_SR = 5;  // Only bits 0-4 drive coils
 
-    srSetBit(coilBit, true);
+  // Returns false if invalid bit, or thermal limit prevents pulse
+  bool pulseBit(uint8_t globalBit, uint16_t duration_ms) {
+    if (globalBit >= SR_CHAIN_BITS) return false;
+    // Reject bits 5-7 within each SR (unused/not connected)
+    if ((globalBit % 8) >= BITS_PER_SR) return false;
+    if (!canPulse(globalBit)) return false;
+
+    srSetBit(globalBit, true);
     srWrite();
     srSetOE(true);
 
     delay(duration_ms);
 
-    srSetBit(coilBit, false);
+    srSetBit(globalBit, false);
     srWrite();
     srSetOE(false);
 
-    recordPulse(coilBit);
+    recordPulse(globalBit);
     return true;
   }
 
-  bool canPulse(uint8_t coilBit) {
-    if (coilBit >= SR_CHAIN_BITS) return false;
-    return (millis() - last_pulse_ms_[coilBit]) >= THERMAL_COOLDOWN_MS;
+  bool canPulse(uint8_t globalBit) {
+    if (globalBit >= SR_CHAIN_BITS) return false;
+    return (millis() - last_pulse_ms_[globalBit]) >= THERMAL_COOLDOWN_MS;
   }
 
   // ── Shutdown ──────────────────────────────────────────────
@@ -137,8 +141,8 @@ private:
   uint8_t sr_state_[NUM_SHIFT_REGISTERS];
   unsigned long last_pulse_ms_[SR_CHAIN_BITS];
 
-  void recordPulse(uint8_t coilBit) {
-    if (coilBit >= SR_CHAIN_BITS) return;
-    last_pulse_ms_[coilBit] = millis();
+  void recordPulse(uint8_t globalBit) {
+    if (globalBit >= SR_CHAIN_BITS) return;
+    last_pulse_ms_[globalBit] = millis();
   }
 };
