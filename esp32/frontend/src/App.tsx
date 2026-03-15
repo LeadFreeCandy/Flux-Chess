@@ -8,102 +8,7 @@ import {
   type GetBoardStateResponse,
 } from "./generated/api";
 import { onSerialLog, type SerialLogEntry } from "./transport";
-
-// ── 3D Wireframe Surface ──────────────────────────────────────
-
-function WireframeSurface({ data }: { data: number[][] }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const W = canvas.width;
-    const H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-
-    const cols = data.length;
-    const rows = data[0]?.length ?? 0;
-    if (cols === 0 || rows === 0) return;
-
-    // Find max for normalization
-    let max = 1;
-    for (const col of data) for (const v of col) if (v > max) max = v;
-
-    // Isometric projection parameters
-    const scaleX = 60;
-    const scaleY = 40;
-    const scaleZ = 100;
-    const originX = W / 2 - ((cols - 1) * scaleX) / 4;
-    const originY = H - 60;
-
-    function project(x: number, y: number, z: number): [number, number] {
-      const px = originX + (x - y) * scaleX * 0.5;
-      const py = originY - (x + y) * scaleY * 0.3 - z * scaleZ;
-      return [px, py];
-    }
-
-    // Draw grid lines along X
-    for (let y = 0; y < rows; y++) {
-      ctx.beginPath();
-      for (let x = 0; x < cols; x++) {
-        const z = data[x][y] / max;
-        const [px, py] = project(x, y, z);
-        if (x === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.strokeStyle = `hsl(${200 + y * 40}, 80%, 60%)`;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    // Draw grid lines along Y
-    for (let x = 0; x < cols; x++) {
-      ctx.beginPath();
-      for (let y = 0; y < rows; y++) {
-        const z = data[x][y] / max;
-        const [px, py] = project(x, y, z);
-        if (y === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.strokeStyle = `hsl(${200 + x * 30}, 70%, 50%)`;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    // Draw dots at vertices
-    for (let x = 0; x < cols; x++) {
-      for (let y = 0; y < rows; y++) {
-        const z = data[x][y] / max;
-        const [px, py] = project(x, y, z);
-        ctx.beginPath();
-        ctx.arc(px, py, 4, 0, Math.PI * 2);
-        const hue = (1 - z) * 240;
-        ctx.fillStyle = `hsl(${hue}, 90%, 55%)`;
-        ctx.fill();
-      }
-    }
-
-    // Value labels
-    ctx.font = "11px monospace";
-    ctx.fillStyle = "#aaa";
-    for (let x = 0; x < cols; x++) {
-      for (let y = 0; y < rows; y++) {
-        const z = data[x][y] / max;
-        const [px, py] = project(x, y, z);
-        ctx.fillText(String(data[x][y]), px + 6, py - 6);
-      }
-    }
-  }, [data]);
-
-  return <canvas ref={canvasRef} width={500} height={300} style={{
-    background: "#0a0a1a",
-    borderRadius: 8,
-    border: "1px solid #333",
-  }} />;
-}
+import SurfacePlot from "./SurfacePlot";
 
 // ── Serial Console ────────────────────────────────────────────
 
@@ -241,7 +146,7 @@ function App() {
             </button>
           </div>
           {boardState ? (
-            <WireframeSurface data={boardState.raw_strengths} />
+            <SurfacePlot data={boardState.raw_strengths} />
           ) : (
             <div style={{ color: "#555", padding: 40, textAlign: "center" }}>
               Start polling to see sensor data
