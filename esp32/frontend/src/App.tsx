@@ -22,7 +22,11 @@ function SerialConsole() {
   }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Auto-scroll only if already near the bottom (don't steal focus)
+    const el = bottomRef.current?.parentElement;
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 60) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }, [logs]);
 
   return (
@@ -92,11 +96,11 @@ function CoilGrid({ pulseDuration, onStatus }: {
   };
 
   return (
-    <div style={{ display: "inline-grid", gridTemplateColumns: `repeat(${GRID_COLS}, 1fr)`, gap: 2 }}>
+    <div style={{ display: "inline-grid", gridTemplateColumns: `repeat(${GRID_COLS}, 36px)`, gap: 3 }}>
       {Array.from({ length: GRID_ROWS }, (_, y) =>
         Array.from({ length: GRID_COLS }, (_, x) => {
-          const coil = hasCoil(x, GRID_ROWS - 1 - y); // flip Y so row 0 is at bottom
           const ry = GRID_ROWS - 1 - y;
+          const coil = hasCoil(x, ry);
           const key = `${x},${ry}`;
           const isPulsing = pulsing === key;
           return (
@@ -104,20 +108,20 @@ function CoilGrid({ pulseDuration, onStatus }: {
               key={key}
               disabled={!coil}
               onClick={() => coil && handleClick(x, ry)}
-              title={coil ? `(${x}, ${ry})` : ""}
+              title={coil ? `Pulse (${x}, ${ry})` : ""}
               style={{
-                width: 32,
-                height: 32,
-                border: "1px solid",
-                borderColor: coil ? "#444" : "#1a1a2e",
+                width: 36,
+                height: 28,
+                border: coil ? "1px solid #3a5a7c" : "1px solid transparent",
                 borderRadius: 4,
-                background: isPulsing ? "#f57f17" : coil ? "#1a3a5c" : "#0d0d1a",
-                color: coil ? "#4fc3f7" : "transparent",
-                fontSize: 8,
+                background: isPulsing ? "#f57f17" : coil ? "#1a3a5c" : "transparent",
+                color: coil ? "#7ab8e0" : "transparent",
+                fontSize: 9,
                 cursor: coil ? "pointer" : "default",
                 fontFamily: "inherit",
                 padding: 0,
                 transition: "background 0.15s",
+                userSelect: "none",
               }}
             >
               {coil ? `${x},${ry}` : ""}
