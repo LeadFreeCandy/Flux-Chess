@@ -7,7 +7,10 @@ export type SerialLogEntry = { dir: "tx" | "rx"; data: string; ts: number };
 type LogListener = (entry: SerialLogEntry) => void;
 const listeners: LogListener[] = [];
 
-export function onSerialLog(fn: LogListener) { listeners.push(fn); }
+export function onSerialLog(fn: LogListener): () => void {
+  listeners.push(fn);
+  return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); };
+}
 export function emitLog(dir: "tx" | "rx", data: string) {
   const entry = { dir, data, ts: Date.now() };
   listeners.forEach(fn => fn(entry));

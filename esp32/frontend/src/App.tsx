@@ -17,7 +17,7 @@ function SerialConsole() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    onSerialLog((entry) => {
+    return onSerialLog((entry) => {
       setLogs((prev) => [...prev.slice(-200), entry]);
     });
   }, []);

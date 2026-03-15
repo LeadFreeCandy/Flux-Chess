@@ -82,7 +82,7 @@ function SurfaceMesh({ data }: { data: number[][] }) {
   }, [geometry]);
 
   return (
-    <group rotation={[-Math.PI / 3, 0, 0]}>
+    <group rotation={[-Math.PI / 2, 0, 0]}>
       <mesh ref={meshRef} geometry={geometry}>
         <meshStandardMaterial
           vertexColors
@@ -124,7 +124,7 @@ export default function SurfacePlot({ data }: { data: number[][] }) {
           minDistance={2}
           maxDistance={15}
         />
-        <gridHelper args={[6, 6, "#222", "#1a1a2e"]} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -0.1]} />
+        <gridHelper args={[6, 6, "#222", "#1a1a2e"]} position={[0, -0.1, 0]} />
       </Canvas>
     </div>
   );
