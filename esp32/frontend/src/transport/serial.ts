@@ -2,7 +2,6 @@ import type { Transport } from "./index";
 
 export class SerialTransport implements Transport {
   private port: SerialPort | null = null;
-  private reader: ReadableStreamDefaultReader<string> | null = null;
   private readBuffer = "";
   private pending: {
     method: string;
@@ -13,25 +12,30 @@ export class SerialTransport implements Transport {
   async connect(): Promise<void> {
     this.port = await navigator.serial.requestPort();
     await this.port.open({ baudRate: 115200 });
+
+    // Wait for ESP32 to boot after port open (triggers reset)
+    await new Promise((r) => setTimeout(r, 2000));
+
     this.startReading();
   }
 
   private async startReading(): Promise<void> {
     if (!this.port?.readable) return;
+
     const decoder = new TextDecoderStream();
     this.port.readable.pipeTo(decoder.writable as WritableStream<Uint8Array>);
-    this.reader = decoder.readable.getReader();
+    const reader = decoder.readable.getReader();
 
     (async () => {
       try {
         while (true) {
-          const { value, done } = await this.reader!.read();
+          const { value, done } = await reader.read();
           if (done) break;
           this.readBuffer += value;
           this.processBuffer();
         }
-      } catch {
-        // Port closed or disconnected
+      } catch (e) {
+        console.error("Serial read error:", e);
       }
     })();
   }
@@ -43,14 +47,16 @@ export class SerialTransport implements Transport {
       this.readBuffer = this.readBuffer.slice(newlineIdx + 1);
       if (!line) continue;
 
+      console.log("Serial RX:", line);
+
       try {
         const msg = JSON.parse(line);
-        if (this.pending && msg.method === this.pending.method) {
+        if (this.pending && msg.method === this.pending.method && "result" in msg) {
           this.pending.resolve(msg.result);
           this.pending = null;
         }
       } catch {
-        // Skip non-JSON lines
+        // Skip non-JSON lines (boot messages, etc.)
       }
     }
   }
@@ -68,9 +74,10 @@ export class SerialTransport implements Transport {
     }
 
     const msg = JSON.stringify({ method, params }) + "\n";
-    const encoder = new TextEncoder();
+    console.log("Serial TX:", msg.trim());
+
     const writer = this.port.writable.getWriter();
-    await writer.write(encoder.encode(msg));
+    await writer.write(new TextEncoder().encode(msg));
     writer.releaseLock();
 
     return new Promise<Res>((resolve, reject) => {
@@ -80,7 +87,6 @@ export class SerialTransport implements Transport {
         reject,
       };
 
-      // Timeout after 5 seconds
       setTimeout(() => {
         if (this.pending?.method === method) {
           this.pending = null;
