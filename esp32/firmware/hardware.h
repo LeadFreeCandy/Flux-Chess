@@ -10,6 +10,9 @@
 // SPI clock for shift registers (74HC595 max ~25MHz, use 4MHz for safety)
 #define SR_SPI_FREQ 4000000
 
+// Watchdog interval and max pulse enforcement
+#define WATCHDOG_INTERVAL_MS 100
+
 class Hardware {
 public:
   Hardware() : spi_(FSPI) {
@@ -36,44 +39,52 @@ public:
     // Initialize state
     memset(sr_state_, 0, sizeof(sr_state_));
     memset(last_pulse_ms_, 0, sizeof(last_pulse_ms_));
+    memset(bit_on_since_, 0, sizeof(bit_on_since_));
+
+    // Create mutex
+    sr_mutex_ = xSemaphoreCreateMutex();
 
     // Blank shift registers
     srClear();
-    LOG_HW("init: SPI on CLK=%d DATA=%d, %d SRs, %d hall sensors", PIN_SR_CLOCK, PIN_SR_DATA, NUM_SHIFT_REGISTERS, NUM_HALL_SENSORS);
+
+    // Start watchdog thread
+    xTaskCreatePinnedToCore(
+      watchdogTask, "hw_watchdog", 4096, this, 1, &watchdog_handle_, 1
+    );
+
+    LOG_HW("init: SPI CLK=%d DATA=%d, %d SRs, %d sensors, watchdog started", PIN_SR_CLOCK, PIN_SR_DATA, NUM_SHIFT_REGISTERS, NUM_HALL_SENSORS);
   }
 
   // ── Shift Registers (SPI) ──────────────────────────────────
 
-  void srWrite() {
-    spi_.beginTransaction(SPISettings(SR_SPI_FREQ, MSBFIRST, SPI_MODE0));
-    // Send last SR first (end of chain shifts out first)
-    for (int i = NUM_SHIFT_REGISTERS - 1; i >= 0; i--) {
-      spi_.transfer(sr_state_[i]);
-    }
-    spi_.endTransaction();
-    // Latch: pulse high to transfer shift register to output
-    digitalWrite(PIN_SR_LATCH, HIGH);
-    digitalWrite(PIN_SR_LATCH, LOW);
-  }
-
   void srSetBit(uint8_t bit, bool val) {
     if (bit >= SR_CHAIN_BITS) return;
+    xSemaphoreTake(sr_mutex_, portMAX_DELAY);
     uint8_t reg = bit / 8;
     uint8_t pos = bit % 8;
     if (val) {
       sr_state_[reg] |= (1 << pos);
+      if (bit_on_since_[bit] == 0) {
+        bit_on_since_[bit] = millis();
+        if (bit_on_since_[bit] == 0) bit_on_since_[bit] = 1; // avoid 0 meaning "off"
+      }
     } else {
       sr_state_[reg] &= ~(1 << pos);
+      bit_on_since_[bit] = 0;
     }
+    xSemaphoreGive(sr_mutex_);
   }
 
   void srClear() {
+    xSemaphoreTake(sr_mutex_, portMAX_DELAY);
     memset(sr_state_, 0, sizeof(sr_state_));
-    srWrite();
+    memset(bit_on_since_, 0, sizeof(bit_on_since_));
+    xSemaphoreGive(sr_mutex_);
+    srWriteInternal();
   }
 
   void srSetOE(bool enabled) {
-    digitalWrite(PIN_SR_OE, enabled ? LOW : HIGH);  // Active low
+    digitalWrite(PIN_SR_OE, enabled ? LOW : HIGH);
   }
 
   // ── Hall Sensors ──────────────────────────────────────────
@@ -103,7 +114,9 @@ public:
 
   static const uint8_t BITS_PER_SR = 5;  // Only bits 0-4 drive coils
 
-  // Returns false if invalid bit, or thermal limit prevents pulse
+  // Sets a coil bit high for duration_ms then clears it.
+  // The watchdog thread writes sr_state_ to hardware every 100ms
+  // and enforces max pulse duration as a safety net.
   bool pulseBit(uint8_t globalBit, uint16_t duration_ms) {
     uint8_t sr = globalBit / 8;
     uint8_t pin = globalBit % 8;
@@ -124,21 +137,20 @@ public:
     }
 
     LOG_HW("pulseBit START: SR%d pin %d (global bit %d) for %dms", sr, pin, globalBit, duration_ms);
-    LOG_HW("  sr_state before: SR%d = 0x%02X", sr, sr_state_[sr]);
     srSetBit(globalBit, true);
-    LOG_HW("  sr_state after:  SR%d = 0x%02X", sr, sr_state_[sr]);
-    srWrite();
     srSetOE(true);
-    LOG_HW("  OE enabled, pulsing for %dms...", duration_ms);
 
+    // Wait for pulse duration — watchdog keeps writing sr_state_ to hw
     delay(duration_ms);
 
     srSetBit(globalBit, false);
-    srWrite();
     srSetOE(false);
-    LOG_HW("  OE disabled, SR%d reset to 0x%02X", sr, sr_state_[sr]);
 
-    recordPulse(globalBit);
+    // Record for thermal tracking
+    xSemaphoreTake(sr_mutex_, portMAX_DELAY);
+    last_pulse_ms_[globalBit] = millis();
+    xSemaphoreGive(sr_mutex_);
+
     LOG_HW("pulseBit DONE: SR%d pin %d, next allowed in %dms", sr, pin, THERMAL_COOLDOWN_MS);
     return true;
   }
@@ -164,7 +176,11 @@ public:
   // ── Shutdown ──────────────────────────────────────────────
 
   void shutdown() {
-    LOG_HW("shutdown: blanking SR, disabling OE, restarting");
+    LOG_HW("shutdown: stopping watchdog, blanking SR, disabling OE");
+    if (watchdog_handle_) {
+      vTaskDelete(watchdog_handle_);
+      watchdog_handle_ = nullptr;
+    }
     srClear();
     srSetOE(false);
     delay(50);
@@ -175,9 +191,61 @@ private:
   SPIClass spi_;
   uint8_t sr_state_[NUM_SHIFT_REGISTERS];
   unsigned long last_pulse_ms_[SR_CHAIN_BITS];
+  unsigned long bit_on_since_[SR_CHAIN_BITS];  // 0 = off, else millis() when turned on
+  SemaphoreHandle_t sr_mutex_;
+  TaskHandle_t watchdog_handle_ = nullptr;
 
-  void recordPulse(uint8_t globalBit) {
-    if (globalBit >= SR_CHAIN_BITS) return;
-    last_pulse_ms_[globalBit] = millis();
+  // Write sr_state_ to hardware (no mutex, caller must hold or be watchdog)
+  void srWriteInternal() {
+    spi_.beginTransaction(SPISettings(SR_SPI_FREQ, MSBFIRST, SPI_MODE0));
+    for (int i = NUM_SHIFT_REGISTERS - 1; i >= 0; i--) {
+      spi_.transfer(sr_state_[i]);
+    }
+    spi_.endTransaction();
+    digitalWrite(PIN_SR_LATCH, HIGH);
+    digitalWrite(PIN_SR_LATCH, LOW);
+  }
+
+  // ── Watchdog Thread ───────────────────────────────────────
+  // Runs every 100ms:
+  //  1. Writes sr_state_ to shift registers
+  //  2. Checks any bits that have been high longer than MAX_PULSE_MS
+  //     and force-clears them as a safety net
+
+  static void watchdogTask(void* param) {
+    Hardware* hw = static_cast<Hardware*>(param);
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(WATCHDOG_INTERVAL_MS));
+
+      xSemaphoreTake(hw->sr_mutex_, portMAX_DELAY);
+
+      // Enforce max pulse duration
+      unsigned long now = millis();
+      bool forced_clear = false;
+      for (int bit = 0; bit < SR_CHAIN_BITS; bit++) {
+        if (hw->bit_on_since_[bit] != 0) {
+          unsigned long on_for = now - hw->bit_on_since_[bit];
+          if (on_for > MAX_PULSE_MS) {
+            uint8_t reg = bit / 8;
+            uint8_t pos = bit % 8;
+            hw->sr_state_[reg] &= ~(1 << pos);
+            hw->bit_on_since_[bit] = 0;
+            hw->last_pulse_ms_[bit] = now;
+            forced_clear = true;
+            LOG_HW("WATCHDOG: force-cleared SR%d pin %d (on for %lums, max %dms)", reg, pos, on_for, MAX_PULSE_MS);
+          }
+        }
+      }
+
+      // Write current state to hardware
+      hw->srWriteInternal();
+
+      xSemaphoreGive(hw->sr_mutex_);
+
+      if (forced_clear) {
+        hw->srSetOE(false);
+        LOG_HW("WATCHDOG: OE disabled after force-clear");
+      }
+    }
   }
 };
