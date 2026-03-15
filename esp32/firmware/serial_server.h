@@ -1,41 +1,6 @@
 #pragma once
-#include <Arduino.h>
 #include <functional>
 #include "board.h"
-
-// ── JSON Parse Helpers (reusable by future web server) ────────
-
-inline String jsonGet(const String& json, const char* key) {
-  String search = String("\"") + key + "\"";
-  int idx = json.indexOf(search);
-  if (idx < 0) return "";
-  idx = json.indexOf(':', idx);
-  if (idx < 0) return "";
-  idx++;
-  while (idx < (int)json.length() && json[idx] == ' ') idx++;
-  if (json[idx] == '"') {
-    int end = json.indexOf('"', idx + 1);
-    return json.substring(idx + 1, end);
-  }
-  int end = idx;
-  while (end < (int)json.length() && json[end] != ',' && json[end] != '}') end++;
-  return json.substring(idx, end);
-}
-
-inline String jsonGetObj(const String& json, const char* key) {
-  String search = String("\"") + key + "\"";
-  int idx = json.indexOf(search);
-  if (idx < 0) return "";
-  idx = json.indexOf('{', idx);
-  if (idx < 0) return "";
-  int depth = 0;
-  for (int i = idx; i < (int)json.length(); i++) {
-    if (json[i] == '{') depth++;
-    if (json[i] == '}') depth--;
-    if (depth == 0) return json.substring(idx, i + 1);
-  }
-  return "";
-}
 
 // ── Command Registry ──────────────────────────────────────────
 
@@ -49,26 +14,26 @@ struct Command {
 // ── Built-in command handlers ─────────────────────────────────
 
 inline String handlePulseCoil(Board& board, const String& params) {
-  uint8_t x = jsonGet(params, "x").toInt();
-  uint8_t y = jsonGet(params, "y").toInt();
-  uint16_t dur = jsonGet(params, "duration_ms").toInt();
-  return board.pulseCoil(x, y, dur).toJson();
+  return board.pulseCoil(
+    jsonGet(params, "x").toInt(),
+    jsonGet(params, "y").toInt(),
+    jsonGet(params, "duration_ms").toInt()
+  ).toJson();
 }
 
-inline String handleGetBoardState(Board& board, const String& params) {
-  (void)params;
+inline String handleGetBoardState(Board& board, const String&) {
   return board.getBoardState().toJson();
 }
 
 inline String handleSetRGB(Board& board, const String& params) {
-  uint8_t r = jsonGet(params, "r").toInt();
-  uint8_t g = jsonGet(params, "g").toInt();
-  uint8_t b = jsonGet(params, "b").toInt();
-  return board.setRGB(r, g, b).toJson();
+  return board.setRGB(
+    jsonGet(params, "r").toInt(),
+    jsonGet(params, "g").toInt(),
+    jsonGet(params, "b").toInt()
+  ).toJson();
 }
 
-inline String handleShutdown(Board& board, const String& params) {
-  (void)params;
+inline String handleShutdown(Board& board, const String&) {
   return ShutdownResponse{}.toJson();
 }
 
@@ -106,7 +71,6 @@ public:
 
 private:
   static const int MAX_COMMANDS = 32;
-
   Board& board_;
   String line_buf_;
   Command commands_[MAX_COMMANDS];
@@ -123,7 +87,6 @@ private:
         String result = commands_[i].handler(board_, params);
         Serial.printf("{\"method\":\"%s\",\"result\":%s}\n",
                       commands_[i].name, result.c_str());
-
         if (method == "shutdown") {
           delay(50);
           board_.shutdown();
