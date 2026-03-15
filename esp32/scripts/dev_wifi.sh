@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/.env"
 
-FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=custom"
+FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc"
 BUILD_DIR="$ROOT/build"
 
 echo "==> Running codegen..."

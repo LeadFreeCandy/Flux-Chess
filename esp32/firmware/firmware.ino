@@ -1,44 +1,7 @@
+// FluxChess ESP32 Firmware — Serial JSON API
+// No libraries, no partitions, just Serial.printf
+
 #include "api.h"
-#include <ArduinoJson.h>
-
-// ── Handlers ──────────────────────────────────────────────────
-
-PulseCoilResponse handle_pulse_coil(const PulseCoilRequest& req) {
-  PulseCoilResponse res = { false, PulseError::NONE };
-  if (req.x >= GRID_COLS || req.y >= GRID_ROWS) {
-    res.error = PulseError::INVALID_COIL;
-    return res;
-  }
-  if (req.duration_ms > MAX_PULSE_MS) {
-    res.error = PulseError::PULSE_TOO_LONG;
-    return res;
-  }
-  res.success = true;
-  return res;
-}
-
-GetBoardStateResponse handle_get_board_state() {
-  GetBoardStateResponse res = {};
-  res.piece_count = 0;
-  return res;
-}
-
-SetRGBResponse handle_set_rgb(const SetRGBRequest& req) {
-  (void)req;
-  return { true };
-}
-
-static const char* pulse_error_str(PulseError e) {
-  switch (e) {
-    case PulseError::NONE: return "NONE";
-    case PulseError::INVALID_COIL: return "INVALID_COIL";
-    case PulseError::PULSE_TOO_LONG: return "PULSE_TOO_LONG";
-    case PulseError::THERMAL_LIMIT: return "THERMAL_LIMIT";
-  }
-  return "NONE";
-}
-
-// ── Serial ────────────────────────────────────────────────────
 
 String lineBuf;
 
@@ -63,58 +26,85 @@ void loop() {
   }
 }
 
+// ── Minimal JSON parser (no ArduinoJson) ──────────────────────
+
+String jsonGet(const String& json, const char* key) {
+  String search = String("\"") + key + "\"";
+  int idx = json.indexOf(search);
+  if (idx < 0) return "";
+  idx = json.indexOf(':', idx);
+  if (idx < 0) return "";
+  idx++;
+  while (idx < (int)json.length() && json[idx] == ' ') idx++;
+  if (json[idx] == '"') {
+    int end = json.indexOf('"', idx + 1);
+    return json.substring(idx + 1, end);
+  }
+  int end = idx;
+  while (end < (int)json.length() && json[end] != ',' && json[end] != '}') end++;
+  return json.substring(idx, end);
+}
+
+String jsonGetObj(const String& json, const char* key) {
+  String search = String("\"") + key + "\"";
+  int idx = json.indexOf(search);
+  if (idx < 0) return "";
+  idx = json.indexOf('{', idx);
+  if (idx < 0) return "";
+  int depth = 0;
+  for (int i = idx; i < (int)json.length(); i++) {
+    if (json[i] == '{') depth++;
+    if (json[i] == '}') depth--;
+    if (depth == 0) return json.substring(idx, i + 1);
+  }
+  return "";
+}
+
+// ── Command handler ───────────────────────────────────────────
+
 void handleCommand(const String& line) {
-  JsonDocument req_doc;
-  if (deserializeJson(req_doc, line)) return;
+  String method = jsonGet(line, "method");
+  if (method.length() == 0) return;
 
-  const char* method = req_doc["method"];
-  if (!method) return;
+  String params = jsonGetObj(line, "params");
 
-  JsonDocument res_doc;
-  res_doc["method"] = method;
+  if (method == "pulse_coil") {
+    int x = jsonGet(params, "x").toInt();
+    int y = jsonGet(params, "y").toInt();
+    int dur = jsonGet(params, "duration_ms").toInt();
 
-  if (strcmp(method, "pulse_coil") == 0) {
-    PulseCoilRequest req = {};
-    req.x = req_doc["params"]["x"] | 0;
-    req.y = req_doc["params"]["y"] | 0;
-    req.duration_ms = req_doc["params"]["duration_ms"] | 0;
-    auto res = handle_pulse_coil(req);
-    res_doc["result"]["success"] = res.success;
-    res_doc["result"]["error"] = pulse_error_str(res.error);
-
-  } else if (strcmp(method, "get_board_state") == 0) {
-    auto res = handle_get_board_state();
-    JsonArray strengths = res_doc["result"]["raw_strengths"].to<JsonArray>();
-    for (int x = 0; x < GRID_COLS; x++) {
-      JsonArray row = strengths.add<JsonArray>();
-      for (int y = 0; y < GRID_ROWS; y++) {
-        row.add(res.raw_strengths[x][y]);
-      }
+    if (x >= GRID_COLS || y >= GRID_ROWS) {
+      Serial.printf("{\"method\":\"pulse_coil\",\"result\":{\"success\":false,\"error\":\"INVALID_COIL\"}}\n");
+    } else if (dur > MAX_PULSE_MS) {
+      Serial.printf("{\"method\":\"pulse_coil\",\"result\":{\"success\":false,\"error\":\"PULSE_TOO_LONG\"}}\n");
+    } else {
+      // TODO: actually pulse the coil
+      Serial.printf("{\"method\":\"pulse_coil\",\"result\":{\"success\":true,\"error\":\"NONE\"}}\n");
     }
-    res_doc["result"]["piece_count"] = res.piece_count;
 
-  } else if (strcmp(method, "set_rgb") == 0) {
-    SetRGBRequest req = {};
-    req.r = req_doc["params"]["r"] | 0;
-    req.g = req_doc["params"]["g"] | 0;
-    req.b = req_doc["params"]["b"] | 0;
-    auto res = handle_set_rgb(req);
-    res_doc["result"]["success"] = res.success;
+  } else if (method == "get_board_state") {
+    Serial.print("{\"method\":\"get_board_state\",\"result\":{\"raw_strengths\":[");
+    for (int x = 0; x < GRID_COLS; x++) {
+      Serial.print("[");
+      for (int y = 0; y < GRID_ROWS; y++) {
+        Serial.print(0);  // stub — no ADC reads yet
+        if (y < GRID_ROWS - 1) Serial.print(",");
+      }
+      Serial.print("]");
+      if (x < GRID_COLS - 1) Serial.print(",");
+    }
+    Serial.printf("],\"piece_count\":0}}\n");
 
-  } else if (strcmp(method, "shutdown") == 0) {
-    res_doc["result"].to<JsonObject>();
-    String out;
-    serializeJson(res_doc, out);
-    Serial.println(out);
+  } else if (method == "set_rgb") {
+    // TODO: drive RGB LEDs
+    Serial.printf("{\"method\":\"set_rgb\",\"result\":{\"success\":true}}\n");
+
+  } else if (method == "shutdown") {
+    Serial.printf("{\"method\":\"shutdown\",\"result\":{}}\n");
     delay(100);
     ESP.restart();
-    return;
 
   } else {
-    res_doc["error"] = "unknown command";
+    Serial.printf("{\"method\":\"%s\",\"error\":\"unknown command\"}\n", method.c_str());
   }
-
-  String out;
-  serializeJson(res_doc, out);
-  Serial.println(out);
 }
