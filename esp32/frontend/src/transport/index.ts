@@ -12,6 +12,12 @@ function detectTransport(): "http" | "serial" {
   return "serial";
 }
 
+export function needsUserGesture(): boolean {
+  const mode =
+    __TRANSPORT__ === "auto" ? detectTransport() : __TRANSPORT__;
+  return mode === "serial";
+}
+
 export async function initTransport(): Promise<void> {
   const mode =
     __TRANSPORT__ === "auto" ? detectTransport() : __TRANSPORT__;
