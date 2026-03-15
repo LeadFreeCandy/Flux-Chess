@@ -4,6 +4,8 @@
 // ── Grid Constants ────────────────────────────────────────────
 constexpr uint8_t GRID_COLS = 10;  // 3 full SR columns + 1 partial
 constexpr uint8_t GRID_ROWS = 7;   // 2 full SR rows + 1 partial
+constexpr uint8_t SENSOR_COLS = 4; // Hall sensor grid
+constexpr uint8_t SENSOR_ROWS = 3;
 constexpr uint8_t MAX_PIECES = 32;
 constexpr uint16_t MAX_PULSE_MS = 1000;
 
@@ -23,6 +25,24 @@ struct PiecePosition {
   Position pos;
 };
 
+// ── Requests ──────────────────────────────────────────────────
+
+struct ShutdownRequest {};
+
+struct PulseCoilRequest {
+  uint8_t x;
+  uint8_t y;
+  uint16_t duration_ms;
+};
+
+struct GetBoardStateRequest {};
+
+struct SetRGBRequest {
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+};
+
 // ── Responses ─────────────────────────────────────────────────
 
 struct ShutdownResponse {
@@ -36,20 +56,19 @@ struct PulseCoilResponse {
 };
 
 struct GetBoardStateResponse {
-  uint16_t raw_strengths[GRID_COLS][GRID_ROWS];
-  PiecePosition pieces[MAX_PIECES];
+  uint16_t raw_strengths[SENSOR_COLS][SENSOR_ROWS];
   uint8_t piece_count;
 
   String toJson() const {
     String arr = "[";
-    for (int x = 0; x < GRID_COLS; x++) {
+    for (int x = 0; x < SENSOR_COLS; x++) {
       arr += "[";
-      for (int y = 0; y < GRID_ROWS; y++) {
+      for (int y = 0; y < SENSOR_ROWS; y++) {
         arr += String(raw_strengths[x][y]);
-        if (y < GRID_ROWS - 1) arr += ",";
+        if (y < SENSOR_ROWS - 1) arr += ",";
       }
       arr += "]";
-      if (x < GRID_COLS - 1) arr += ",";
+      if (x < SENSOR_COLS - 1) arr += ",";
     }
     arr += "]";
     return Json().addRaw("raw_strengths", arr).add("piece_count", piece_count).build();

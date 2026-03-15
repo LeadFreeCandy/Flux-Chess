@@ -41,11 +41,12 @@ public:
   GetBoardStateResponse getBoardState() {
     GetBoardStateResponse res = {};
 
+    // 12 hall sensors map to a 4×3 grid
     uint16_t raw[NUM_HALL_SENSORS];
     hw_.readAllSensors(raw, NUM_HALL_SENSORS);
     for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      int col = i % GRID_COLS;
-      int row = i / GRID_COLS;
+      int col = i % SENSOR_COLS;
+      int row = i / SENSOR_COLS;
       res.raw_strengths[col][row] = raw[i];
     }
 

@@ -2,6 +2,17 @@ export interface Transport {
   call<Res>(method: string, params: Record<string, unknown> | object): Promise<Res>;
 }
 
+// Serial log for the raw console
+export type SerialLogEntry = { dir: "tx" | "rx"; data: string; ts: number };
+type LogListener = (entry: SerialLogEntry) => void;
+const listeners: LogListener[] = [];
+
+export function onSerialLog(fn: LogListener) { listeners.push(fn); }
+export function emitLog(dir: "tx" | "rx", data: string) {
+  const entry = { dir, data, ts: Date.now() };
+  listeners.forEach(fn => fn(entry));
+}
+
 let _transport: Transport | null = null;
 
 function detectTransport(): "http" | "serial" {
