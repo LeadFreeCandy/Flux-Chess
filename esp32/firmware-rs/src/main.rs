@@ -71,9 +71,9 @@ fn main() -> ! {
             board.watchdog_tick();
         }
 
-        // Yield CPU when idle — prevents busy-spinning
+        // Hint CPU we're polling — reduces power in tight loops
         if count == 0 {
-            delay.delay_millis(1);
+            core::hint::spin_loop();
         }
     }
 }
