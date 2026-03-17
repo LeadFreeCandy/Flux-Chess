@@ -1,1 +1,4 @@
 .DS_Store
+
+sim/biot-savart/sim_files/
+sim/biot-savart/__pycache__/
