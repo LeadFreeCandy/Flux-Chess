@@ -1,20 +1,13 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::format;
-use alloc::boxed::Box;
 use alloc::vec::Vec;
+
+use esp_hal::usb_serial_jtag::UsbSerialJtagTx;
+use esp_hal::Blocking;
 
 use crate::api::*;
 use crate::board::Board;
-
-// ── Command Registry ──────────────────────────────────────────
-
-type CommandHandler = Box<dyn Fn(&mut Board<'_>, &str) -> String>;
-
-struct Command {
-    name: &'static str,
-    handler: fn(&mut Board<'_>, &str) -> String,
-}
 
 // ── JSON parse helpers ────────────────────────────────────────
 
@@ -26,13 +19,11 @@ pub fn json_get(json: &str, key: &str) -> String {
     let val_str = after_key[colon + 1..].trim_start();
 
     if val_str.starts_with('"') {
-        // String value
         let inner = &val_str[1..];
         let Some(end) = inner.find('"') else { return String::new() };
         inner[..end].into()
     } else {
-        // Number/bool value
-        let end = val_str.find([',', '}'].as_ref()).unwrap_or(val_str.len());
+        let end = val_str.find(&[',', '}'][..]).unwrap_or(val_str.len());
         val_str[..end].trim().into()
     }
 }
@@ -60,7 +51,14 @@ fn json_get_obj(json: &str, key: &str) -> String {
     String::new()
 }
 
-// ── Built-in command handlers ─────────────────────────────────
+// ── Command handler type ──────────────────────────────────────
+
+struct Command {
+    name: &'static str,
+    handler: fn(&mut Board<'_>, &str) -> String,
+}
+
+// ── Built-in handlers ─────────────────────────────────────────
 
 fn handle_pulse_coil(board: &mut Board<'_>, params: &str) -> String {
     let x: u8 = json_get(params, "x").parse().unwrap_or(0);
@@ -84,10 +82,7 @@ fn handle_set_rgb(board: &mut Board<'_>, params: &str) -> String {
 }
 
 fn handle_shutdown(board: &mut Board<'_>, _params: &str) -> String {
-    let res = ShutdownResponse {};
-    let json = serde_json::to_string(&res).unwrap_or_else(|_| "{}".into());
-    // Return the response — the caller sends it then calls board.shutdown()
-    json
+    serde_json::to_string(&ShutdownResponse {}).unwrap_or_else(|_| "{}".into())
 }
 
 // ── Serial Server ─────────────────────────────────────────────
@@ -114,13 +109,12 @@ impl SerialServer {
         self.commands.push(Command { name, handler });
     }
 
-    /// Feed a byte from serial. Returns true if a command was processed.
-    pub fn feed(&mut self, byte: u8, board: &mut Board<'_>) -> bool {
+    pub fn feed(&mut self, byte: u8, board: &mut Board<'_>, tx: &mut UsbSerialJtagTx<'_, Blocking>) -> bool {
         if byte == b'\n' {
-            let line = core::mem::take(&mut self.line_buf);
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                self.handle_command(trimmed, board);
+            let line: String = self.line_buf.trim().into();
+            self.line_buf.clear();
+            if !line.is_empty() {
+                self.handle_command(&line, board, tx);
                 return true;
             }
         } else {
@@ -129,7 +123,7 @@ impl SerialServer {
         false
     }
 
-    fn handle_command(&self, line: &str, board: &mut Board<'_>) {
+    fn handle_command(&self, line: &str, board: &mut Board<'_>, tx: &mut UsbSerialJtagTx<'_, Blocking>) {
         let method = json_get(line, "method");
         if method.is_empty() { return; }
 
@@ -138,7 +132,8 @@ impl SerialServer {
         for cmd in &self.commands {
             if method == cmd.name {
                 let result = (cmd.handler)(board, &params);
-                esp_println::print!("{{\"method\":\"{}\",\"result\":{}}}\n", cmd.name, result);
+                let response = format!("{{\"method\":\"{}\",\"result\":{}}}\n", cmd.name, result);
+                tx.write(response.as_bytes()).ok();
 
                 if method == "shutdown" {
                     board.shutdown(); // never returns
@@ -147,6 +142,7 @@ impl SerialServer {
             }
         }
 
-        esp_println::print!("{{\"method\":\"{}\",\"error\":\"unknown command\"}}\n", method);
+        let err = format!("{{\"method\":\"{}\",\"error\":\"unknown command\"}}\n", method);
+        tx.write(err.as_bytes()).ok();
     }
 }
