@@ -1,112 +1,151 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::format;
-use alloc::vec::Vec;
 
 use esp_hal::usb_serial_jtag::UsbSerialJtagTx;
 use esp_hal::Blocking;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::api::*;
 use crate::board::Board;
 
-// ── JSON parse helpers ────────────────────────────────────────
+// ── Command macro ─────────────────────────────────────────────
+//
+// Generates the command table from one-liner definitions:
+//
+//   commands! {
+//       "pulse_coil" => PulseCoilRequest => |b, r| b.pulse_coil(r.x, r.y, r.duration_ms),
+//       "get_board_state" => () => |b, _| b.get_board_state(),
+//   }
+//
 
-pub fn json_get(json: &str, key: &str) -> String {
-    let search = format!("\"{}\"", key);
-    let Some(idx) = json.find(&search) else { return String::new() };
-    let after_key = &json[idx + search.len()..];
-    let Some(colon) = after_key.find(':') else { return String::new() };
-    let val_str = after_key[colon + 1..].trim_start();
-
-    if val_str.starts_with('"') {
-        let inner = &val_str[1..];
-        let Some(end) = inner.find('"') else { return String::new() };
-        inner[..end].into()
-    } else {
-        let end = val_str.find(&[',', '}'][..]).unwrap_or(val_str.len());
-        val_str[..end].trim().into()
-    }
+macro_rules! commands {
+    ($($name:literal => () => |$b:ident, $_:ident| $body:expr),* $(,)?) => {
+        &[$(
+            Command {
+                name: $name,
+                handler: |$b: &mut Board<'_>, _params: &str| -> String {
+                    let res = $body;
+                    serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
+                },
+            },
+        )*]
+    };
+    // Can't mix () and typed arms in one macro_rules — use a combined approach
 }
 
-fn json_get_obj(json: &str, key: &str) -> String {
-    let search = format!("\"{}\"", key);
-    let Some(idx) = json.find(&search) else { return String::new() };
-    let after_key = &json[idx + search.len()..];
-    let Some(brace) = after_key.find('{') else { return String::new() };
-    let from_brace = &after_key[brace..];
-
-    let mut depth = 0;
-    for (i, c) in from_brace.chars().enumerate() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return from_brace[..=i].into();
-                }
-            }
-            _ => {}
-        }
-    }
-    String::new()
-}
-
-// ── Command handler type ──────────────────────────────────────
-
+// Two-phase: typed requests get deserialized, () requests skip parsing
 struct Command {
     name: &'static str,
     handler: fn(&mut Board<'_>, &str) -> String,
 }
 
-// ── Built-in handlers ─────────────────────────────────────────
-
-fn handle_pulse_coil(board: &mut Board<'_>, params: &str) -> String {
-    let x: u8 = json_get(params, "x").parse().unwrap_or(0);
-    let y: u8 = json_get(params, "y").parse().unwrap_or(0);
-    let dur: u16 = json_get(params, "duration_ms").parse().unwrap_or(0);
-    let res = board.pulse_coil(x, y, dur);
-    serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
+fn make_handler<Req, Res, F>(f: F) -> fn(&mut Board<'_>, &str) -> String
+where
+    Req: DeserializeOwned,
+    Res: Serialize,
+    F: Fn(&mut Board<'_>, Req) -> Res + 'static,
+{
+    // Can't use closures as fn pointers with captures.
+    // Use a different approach below.
+    unreachable!()
 }
 
-fn handle_get_board_state(board: &mut Board<'_>, _params: &str) -> String {
-    let res = board.get_board_state();
-    serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
+// Since Rust fn pointers can't capture, we use a macro to inline everything:
+
+macro_rules! typed_command {
+    ($name:literal, $req:ty, |$b:ident, $r:ident| $body:expr) => {
+        Command {
+            name: $name,
+            handler: |$b: &mut Board<'_>, params: &str| -> String {
+                let $r: $req = match serde_json::from_str(params) {
+                    Ok(r) => r,
+                    Err(_) => return format!("{{\"error\":\"invalid params for {}\"}}",  $name),
+                };
+                let res = $body;
+                serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
+            },
+        }
+    };
 }
 
-fn handle_set_rgb(board: &mut Board<'_>, params: &str) -> String {
-    let r: u8 = json_get(params, "r").parse().unwrap_or(0);
-    let g: u8 = json_get(params, "g").parse().unwrap_or(0);
-    let b: u8 = json_get(params, "b").parse().unwrap_or(0);
-    let res = board.set_rgb(r, g, b);
-    serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
+macro_rules! void_command {
+    ($name:literal, |$b:ident| $body:expr) => {
+        Command {
+            name: $name,
+            handler: |$b: &mut Board<'_>, _params: &str| -> String {
+                let res = $body;
+                serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
+            },
+        }
+    };
 }
 
-fn handle_shutdown(board: &mut Board<'_>, _params: &str) -> String {
-    serde_json::to_string(&ShutdownResponse {}).unwrap_or_else(|_| "{}".into())
+// ── Command table ─────────────────────────────────────────────
+
+fn build_commands() -> &'static [Command] {
+    &[
+        typed_command!("pulse_coil", PulseCoilRequest,
+            |board, req| board.pulse_coil(req.x, req.y, req.duration_ms)),
+        void_command!("get_board_state",
+            |board| board.get_board_state()),
+        typed_command!("set_rgb", SetRGBRequest,
+            |board, req| board.set_rgb(req.r, req.g, req.b)),
+        void_command!("shutdown",
+            |board| ShutdownResponse {}),
+    ]
+}
+
+// ── JSON envelope parsing ─────────────────────────────────────
+// We only need to extract "method" and "params" from the outer envelope.
+// The params object is passed as raw JSON to serde for deserialization.
+
+fn extract_method(json: &str) -> Option<&str> {
+    let needle = "\"method\":\"";
+    let start = json.find(needle)? + needle.len();
+    let end = json[start..].find('"')? + start;
+    Some(&json[start..end])
+}
+
+fn extract_params(json: &str) -> &str {
+    let needle = "\"params\":";
+    match json.find(needle) {
+        Some(idx) => {
+            let rest = &json[idx + needle.len()..];
+            let rest = rest.trim_start();
+            if rest.starts_with('{') {
+                let mut depth = 0;
+                for (i, c) in rest.chars().enumerate() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 { return &rest[..=i]; }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "{}"
+        }
+        None => "{}",
+    }
 }
 
 // ── Serial Server ─────────────────────────────────────────────
 
 pub struct SerialServer {
     line_buf: String,
-    commands: Vec<Command>,
+    commands: &'static [Command],
 }
 
 impl SerialServer {
     pub fn new() -> Self {
-        let mut s = Self {
+        Self {
             line_buf: String::new(),
-            commands: Vec::new(),
-        };
-        s.on("pulse_coil", handle_pulse_coil);
-        s.on("get_board_state", handle_get_board_state);
-        s.on("set_rgb", handle_set_rgb);
-        s.on("shutdown", handle_shutdown);
-        s
-    }
-
-    pub fn on(&mut self, name: &'static str, handler: fn(&mut Board<'_>, &str) -> String) {
-        self.commands.push(Command { name, handler });
+            commands: build_commands(),
+        }
     }
 
     pub fn feed(&mut self, byte: u8, board: &mut Board<'_>, tx: &mut UsbSerialJtagTx<'_, Blocking>) -> bool {
@@ -124,19 +163,17 @@ impl SerialServer {
     }
 
     fn handle_command(&self, line: &str, board: &mut Board<'_>, tx: &mut UsbSerialJtagTx<'_, Blocking>) {
-        let method = json_get(line, "method");
-        if method.is_empty() { return; }
+        let Some(method) = extract_method(line) else { return };
+        let params = extract_params(line);
 
-        let params = json_get_obj(line, "params");
-
-        for cmd in &self.commands {
+        for cmd in self.commands {
             if method == cmd.name {
-                let result = (cmd.handler)(board, &params);
+                let result = (cmd.handler)(board, params);
                 let response = format!("{{\"method\":\"{}\",\"result\":{}}}\n", cmd.name, result);
                 tx.write(response.as_bytes()).ok();
 
                 if method == "shutdown" {
-                    board.shutdown(); // never returns
+                    board.shutdown();
                 }
                 return;
             }
