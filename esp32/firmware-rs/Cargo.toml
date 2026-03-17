@@ -1,18 +1,21 @@
+[workspace]
+members = [".", "api"]
+resolver = "2"
+
 [package]
 name = "fluxchess-firmware"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+fluxchess-api = { path = "api" }
 esp-hal = { version = "1", features = ["esp32s3", "unstable"] }
 esp-backtrace = { version = "0.15", features = ["esp32s3", "panic-handler", "println"] }
 esp-println = { version = "0.13", features = ["esp32s3", "jtag-serial", "log"], default-features = false }
 esp-alloc = "0.7"
 log = "0.4"
-
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-
 embassy-executor = { version = "0.7", features = ["task-arena-size-65536"] }
 embassy-time = "0.4"
 
