@@ -1,1 +1,6 @@
 .DS_Store
+coil_generation/coil_layer_*
+__pycache__/
+build/
+pcb_layout
+simulations
