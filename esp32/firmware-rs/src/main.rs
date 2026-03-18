@@ -5,7 +5,14 @@
 extern crate alloc;
 
 use esp_alloc as _;
-use esp_backtrace as _;
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+esp_bootloader_esp_idf::esp_app_desc!();
+
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
@@ -29,11 +36,9 @@ fn main() -> ! {
 
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    // USB Serial/JTAG — split into rx and tx
     let usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
     let (mut rx, mut tx) = usb_serial.split();
 
-    // SPI for shift registers
     let spi = Spi::new(
         peripherals.SPI2,
         SpiConfig::default()
@@ -58,20 +63,17 @@ fn main() -> ! {
 
     let mut last_watchdog = esp_hal::time::Instant::now();
     loop {
-        // Drain available serial bytes
         let mut buf = [0u8; 64];
         let count = rx.drain_rx_fifo(&mut buf);
         for i in 0..count {
             server.feed(buf[i], &mut board, &mut tx);
         }
 
-        // Watchdog tick every 100ms
         if last_watchdog.elapsed().as_millis() >= 100 {
             last_watchdog = esp_hal::time::Instant::now();
             board.watchdog_tick();
         }
 
-        // Hint CPU we're polling — reduces power in tight loops
         if count == 0 {
             core::hint::spin_loop();
         }
