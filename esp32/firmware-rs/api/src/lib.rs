@@ -23,12 +23,12 @@ pub enum PulseError {
     THERMAL_LIMIT,
 }
 
-// ── Requests ──────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
-pub struct PulseCoilRequest {
+pub struct PulseCoilParams {
     pub x: u8,
     pub y: u8,
     pub duration_ms: u16,
@@ -37,18 +37,16 @@ pub struct PulseCoilRequest {
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
-pub struct SetRGBRequest {
+pub struct RGBColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
 }
 
-// ── Responses ─────────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
-pub struct PulseCoilResponse {
+pub struct PulseResult {
     pub success: bool,
     pub error: PulseError,
 }
@@ -56,7 +54,7 @@ pub struct PulseCoilResponse {
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
-pub struct GetBoardStateResponse {
+pub struct BoardState {
     pub raw_strengths: [[u16; SENSOR_ROWS]; SENSOR_COLS],
     pub piece_count: u8,
 }
@@ -64,11 +62,6 @@ pub struct GetBoardStateResponse {
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
-pub struct SetRGBResponse {
+pub struct CommandResult {
     pub success: bool,
 }
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
-pub struct ShutdownResponse {}

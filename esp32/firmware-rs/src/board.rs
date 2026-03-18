@@ -31,17 +31,17 @@ impl<'d> Board<'d> {
 
     // ── Coil Control ──────────────────────────────────────────
 
-    pub fn pulse_coil(&mut self, x: u8, y: u8, duration_ms: u16) -> PulseCoilResponse {
+    pub fn pulse_coil(&mut self, x: u8, y: u8, duration_ms: u16) -> PulseResult {
         log::info!("pulseCoil: request at grid ({},{}) for {}ms", x, y, duration_ms);
 
         if x as usize >= GRID_COLS || y as usize >= GRID_ROWS {
             log::warn!("pulseCoil REJECT: ({},{}) out of bounds ({}x{})", x, y, GRID_COLS, GRID_ROWS);
-            return PulseCoilResponse { success: false, error: PulseError::INVALID_COIL };
+            return PulseResult { success: false, error: PulseError::INVALID_COIL };
         }
 
         if duration_ms > MAX_PULSE_MS {
             log::warn!("pulseCoil REJECT: {}ms exceeds max {}ms", duration_ms, MAX_PULSE_MS);
-            return PulseCoilResponse { success: false, error: PulseError::PULSE_TOO_LONG };
+            return PulseResult { success: false, error: PulseError::PULSE_TOO_LONG };
         }
 
         let bit = match Self::coord_to_bit(x, y) {
@@ -51,7 +51,7 @@ impl<'d> Board<'d> {
                 let ly = y as usize % SR_BLOCK;
                 log::warn!("pulseCoil REJECT: ({},{}) no coil (local {},{} in block {},{})",
                     x, y, lx, ly, x as usize / SR_BLOCK, y as usize / SR_BLOCK);
-                return PulseCoilResponse { success: false, error: PulseError::INVALID_COIL };
+                return PulseResult { success: false, error: PulseError::INVALID_COIL };
             }
         };
 
@@ -61,16 +61,16 @@ impl<'d> Board<'d> {
 
         if !self.hw.pulse_bit(bit, duration_ms) {
             log::warn!("pulseCoil FAIL: hw refused SR{} pin {} (thermal)", sr, pin);
-            return PulseCoilResponse { success: false, error: PulseError::THERMAL_LIMIT };
+            return PulseResult { success: false, error: PulseError::THERMAL_LIMIT };
         }
 
         log::info!("pulseCoil OK: ({},{}) pulsed for {}ms via SR{} pin {}", x, y, duration_ms, sr, pin);
-        PulseCoilResponse { success: true, error: PulseError::NONE }
+        PulseResult { success: true, error: PulseError::NONE }
     }
 
     // ── Board State ───────────────────────────────────────────
 
-    pub fn get_board_state(&self) -> GetBoardStateResponse {
+    pub fn get_board_state(&self) -> BoardState {
         let raw = self.hw.read_all_sensors();
         let mut strengths = [[0u16; SENSOR_ROWS]; SENSOR_COLS];
         for i in 0..NUM_HALL_SENSORS {
@@ -78,7 +78,7 @@ impl<'d> Board<'d> {
             let row = i / SENSOR_COLS;
             strengths[col][row] = raw[i];
         }
-        GetBoardStateResponse {
+        BoardState {
             raw_strengths: strengths,
             piece_count: 0,
         }
@@ -86,10 +86,10 @@ impl<'d> Board<'d> {
 
     // ── RGB ───────────────────────────────────────────────────
 
-    pub fn set_rgb(&mut self, r: u8, g: u8, b: u8) -> SetRGBResponse {
+    pub fn set_rgb(&mut self, r: u8, g: u8, b: u8) -> CommandResult {
         log::info!("setRGB: r={} g={} b={} (#{:02X}{:02X}{:02X})", r, g, b, r, g, b);
         self.hw.set_rgb(r, g, b);
-        SetRGBResponse { success: true }
+        CommandResult { success: true }
     }
 
     // ── System ────────────────────────────────────────────────

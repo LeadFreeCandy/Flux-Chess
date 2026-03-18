@@ -4,9 +4,6 @@ use alloc::format;
 
 use esp_hal::usb_serial_jtag::UsbSerialJtagTx;
 use esp_hal::Blocking;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-
 use crate::api::*;
 use crate::board::Board;
 
@@ -15,7 +12,7 @@ use crate::board::Board;
 // Generates the command table from one-liner definitions:
 //
 //   commands! {
-//       "pulse_coil" => PulseCoilRequest => |b, r| b.pulse_coil(r.x, r.y, r.duration_ms),
+//       "pulse_coil" => PulseCoilParams => |b, r| b.pulse_coil(r.x, r.y, r.duration_ms),
 //       "get_board_state" => () => |b, _| b.get_board_state(),
 //   }
 //
@@ -40,19 +37,6 @@ struct Command {
     name: &'static str,
     handler: fn(&mut Board<'_>, &str) -> String,
 }
-
-fn make_handler<Req, Res, F>(f: F) -> fn(&mut Board<'_>, &str) -> String
-where
-    Req: DeserializeOwned,
-    Res: Serialize,
-    F: Fn(&mut Board<'_>, Req) -> Res + 'static,
-{
-    // Can't use closures as fn pointers with captures.
-    // Use a different approach below.
-    unreachable!()
-}
-
-// Since Rust fn pointers can't capture, we use a macro to inline everything:
 
 macro_rules! typed_command {
     ($name:literal, $req:ty, |$b:ident, $r:ident| $body:expr) => {
@@ -86,14 +70,14 @@ macro_rules! void_command {
 
 fn build_commands() -> &'static [Command] {
     &[
-        typed_command!("pulse_coil", PulseCoilRequest,
+        typed_command!("pulse_coil", PulseCoilParams,
             |board, req| board.pulse_coil(req.x, req.y, req.duration_ms)),
         void_command!("get_board_state",
             |board| board.get_board_state()),
-        typed_command!("set_rgb", SetRGBRequest,
+        typed_command!("set_rgb", RGBColor,
             |board, req| board.set_rgb(req.r, req.g, req.b)),
         void_command!("shutdown",
-            |board| ShutdownResponse {}),
+            |board| CommandResult { success: true }),
     ]
 }
 
