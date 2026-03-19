@@ -51,8 +51,12 @@ export class SerialTransport implements Transport {
 
       try {
         const msg = JSON.parse(line);
-        if (this.pending && msg.method === this.pending.method && "result" in msg) {
-          this.pending.resolve(msg.result);
+        if (this.pending && msg.method === this.pending.method) {
+          if ("result" in msg) {
+            this.pending.resolve(msg.result);
+          } else if ("error" in msg) {
+            this.pending.reject(new Error(msg.error));
+          }
           this.pending = null;
         }
       } catch {
@@ -66,17 +70,7 @@ export class SerialTransport implements Transport {
     params: Record<string, unknown>
   ): Promise<Res> {
     if (!this.port?.writable) throw new Error("Serial port not connected");
-
-    // Wait for any in-flight request to complete before sending
-    if (this.pending) {
-      await new Promise<void>((resolve) => {
-        const check = () => {
-          if (!this.pending) resolve();
-          else setTimeout(check, 10);
-        };
-        check();
-      });
-    }
+    if (this.pending) throw new Error("Serial transport is busy");
 
     const msg = JSON.stringify({ method, params }) + "\n";
     emitLog("tx", msg.trim());
