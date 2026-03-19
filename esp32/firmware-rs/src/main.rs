@@ -52,7 +52,14 @@ fn main() -> ! {
     let latch = Output::new(peripherals.GPIO42, Level::Low, OutputConfig::default());
     let oe = Output::new(peripherals.GPIO48, Level::High, OutputConfig::default());
 
-    let hw = Hardware::new(spi, latch, oe);
+    let hw = Hardware::new(
+        spi, latch, oe,
+        peripherals.ADC1, peripherals.ADC2,
+        peripherals.GPIO1, peripherals.GPIO2, peripherals.GPIO3,
+        peripherals.GPIO4, peripherals.GPIO5, peripherals.GPIO6,
+        peripherals.GPIO7, peripherals.GPIO8, peripherals.GPIO9,
+        peripherals.GPIO10, peripherals.GPIO11, peripherals.GPIO12,
+    );
     let mut board = Board::new(hw);
     let mut server = SerialServer::new();
 

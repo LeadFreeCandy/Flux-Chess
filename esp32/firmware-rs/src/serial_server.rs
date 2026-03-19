@@ -22,7 +22,7 @@ macro_rules! commands {
         &[$(
             Command {
                 name: $name,
-                handler: |$b: &mut Board<'_>, _params: &str| -> String {
+                handler: |$b: &mut Board, _params: &str| -> String {
                     let res = $body;
                     serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
                 },
@@ -35,14 +35,14 @@ macro_rules! commands {
 // Two-phase: typed requests get deserialized, () requests skip parsing
 struct Command {
     name: &'static str,
-    handler: fn(&mut Board<'_>, &str) -> String,
+    handler: fn(&mut Board, &str) -> String,
 }
 
 macro_rules! typed_command {
     ($name:literal, $req:ty, |$b:ident, $r:ident| $body:expr) => {
         Command {
             name: $name,
-            handler: |$b: &mut Board<'_>, params: &str| -> String {
+            handler: |$b: &mut Board, params: &str| -> String {
                 let $r: $req = match serde_json::from_str(params) {
                     Ok(r) => r,
                     Err(_) => return format!("{{\"error\":\"invalid params for {}\"}}",  $name),
@@ -58,7 +58,7 @@ macro_rules! void_command {
     ($name:literal, |$b:ident| $body:expr) => {
         Command {
             name: $name,
-            handler: |$b: &mut Board<'_>, _params: &str| -> String {
+            handler: |$b: &mut Board, _params: &str| -> String {
                 let res = $body;
                 serde_json::to_string(&res).unwrap_or_else(|_| "{}".into())
             },
@@ -76,6 +76,8 @@ fn build_commands() -> &'static [Command] {
             |board| board.get_board_state()),
         typed_command!("set_rgb", RGBColor,
             |board, req| board.set_rgb(req.r, req.g, req.b)),
+        typed_command!("calibrate", CalibrateParams,
+            |board, req| board.calibrate(req.samples, req.pulse_ms)),
         void_command!("shutdown",
             |board| CommandResult { success: true }),
     ]
@@ -132,7 +134,7 @@ impl SerialServer {
         }
     }
 
-    pub fn feed(&mut self, byte: u8, board: &mut Board<'_>, tx: &mut UsbSerialJtagTx<'_, Blocking>) -> bool {
+    pub fn feed(&mut self, byte: u8, board: &mut Board, tx: &mut UsbSerialJtagTx<'_, Blocking>) -> bool {
         if byte == b'\n' {
             let line: String = self.line_buf.trim().into();
             self.line_buf.clear();
@@ -146,7 +148,7 @@ impl SerialServer {
         false
     }
 
-    fn handle_command(&self, line: &str, board: &mut Board<'_>, tx: &mut UsbSerialJtagTx<'_, Blocking>) {
+    fn handle_command(&self, line: &str, board: &mut Board, tx: &mut UsbSerialJtagTx<'_, Blocking>) {
         let Some(method) = extract_method(line) else { return };
         let params = extract_params(line);
 

@@ -14,10 +14,12 @@ pub const MAX_PULSE_MS: u16 = 1000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
 #[allow(non_camel_case_types)]
 pub enum PulseError {
-    NONE,
     INVALID_COIL,
     PULSE_TOO_LONG,
     THERMAL_LIMIT,
@@ -27,7 +29,10 @@ pub enum PulseError {
 
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
 pub struct PulseCoilParams {
     pub x: u8,
     pub y: u8,
@@ -36,7 +41,10 @@ pub struct PulseCoilParams {
 
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
 pub struct RGBColor {
     pub r: u8,
     pub g: u8,
@@ -44,24 +52,69 @@ pub struct RGBColor {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(tag = "status")]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
-pub struct PulseResult {
-    pub success: bool,
-    pub error: PulseError,
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
+pub enum PulseResult {
+    SUCCESS,
+    FAILURE(PulseError),
 }
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
 pub struct BoardState {
     pub raw_strengths: [[u16; SENSOR_ROWS]; SENSOR_COLS],
     pub piece_count: u8,
 }
 
+pub const NUM_SENSORS: usize = SENSOR_COLS * SENSOR_ROWS;
+
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
+pub struct SensorCalibration {
+    pub baseline: u16,
+    pub coil_on: u16,
+    pub delta: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
+pub struct CalibrationResult {
+    pub sensors: [SensorCalibration; NUM_SENSORS],
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
+pub struct CalibrateParams {
+    pub samples: u8,
+    pub pulse_ms: u16,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts",
+    ts(export, export_to = "../../../frontend/src/generated/bindings/")
+)]
 pub struct CommandResult {
     pub success: bool,
 }
