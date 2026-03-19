@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use esp_hal::analog::adc::{Adc, AdcChannel, AdcConfig, AdcPin, Attenuation};
+use esp_hal::analog::adc::{Adc, AdcConfig, Attenuation};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::peripherals::*;
 use esp_hal::spi::master::Spi;
@@ -13,26 +13,6 @@ use crate::pins::*;
 
 const THERMAL_COOLDOWN_MS: u64 = 500;
 
-// ── Type-erased sensor pin ───────────────────────────────────
-
-trait Adc1Pin {
-    fn read(&mut self, adc: &mut Adc<'static, ADC1<'static>, Blocking>) -> u16;
-}
-impl<P: AdcChannel> Adc1Pin for AdcPin<P, ADC1<'static>> {
-    fn read(&mut self, adc: &mut Adc<'static, ADC1<'static>, Blocking>) -> u16 {
-        adc.read_blocking(self)
-    }
-}
-
-trait Adc2Pin {
-    fn read(&mut self, adc: &mut Adc<'static, ADC2<'static>, Blocking>) -> u16;
-}
-impl<P: AdcChannel> Adc2Pin for AdcPin<P, ADC2<'static>> {
-    fn read(&mut self, adc: &mut Adc<'static, ADC2<'static>, Blocking>) -> u16 {
-        adc.read_blocking(self)
-    }
-}
-
 pub struct Hardware {
     spi: Spi<'static, Blocking>,
     latch: Output<'static>,
@@ -40,8 +20,8 @@ pub struct Hardware {
 
     adc1: Adc<'static, ADC1<'static>, Blocking>,
     adc2: Adc<'static, ADC2<'static>, Blocking>,
-    adc1_pins: Vec<Box<dyn Adc1Pin>>,
-    adc2_pins: Vec<Box<dyn Adc2Pin>>,
+    adc1_pins: Vec<Box<dyn Adc1Read>>,
+    adc2_pins: Vec<Box<dyn Adc2Read>>,
 
     sr_state: [u8; NUM_SHIFT_REGISTERS],
     last_pulse_ms: [u64; SR_CHAIN_BITS],
@@ -63,7 +43,7 @@ impl Hardware {
         let a = Attenuation::_11dB;
 
         let mut c1 = AdcConfig::new();
-        let adc1_pins: Vec<Box<dyn Adc1Pin>> = vec![
+        let adc1_pins: Vec<Box<dyn Adc1Read>> = vec![
             Box::new(c1.enable_pin(g1, a)),  Box::new(c1.enable_pin(g2, a)),
             Box::new(c1.enable_pin(g3, a)),  Box::new(c1.enable_pin(g4, a)),
             Box::new(c1.enable_pin(g5, a)),  Box::new(c1.enable_pin(g6, a)),
@@ -73,7 +53,7 @@ impl Hardware {
         let adc1 = Adc::new(adc1_periph, c1);
 
         let mut c2 = AdcConfig::new();
-        let adc2_pins: Vec<Box<dyn Adc2Pin>> = vec![
+        let adc2_pins: Vec<Box<dyn Adc2Read>> = vec![
             Box::new(c2.enable_pin(g11, a)), Box::new(c2.enable_pin(g12, a)),
         ];
         let adc2 = Adc::new(adc2_periph, c2);
