@@ -17,13 +17,13 @@ export class SerialTransport implements Transport {
     this.startReading();
   }
 
-  private async startReading(): Promise<void> {
+  private startReading(): void {
     if (!this.port?.readable) return;
 
     const reader = this.port.readable.getReader();
     const decoder = new TextDecoder();
 
-    (async () => {
+    const readLoop = async () => {
       try {
         while (true) {
           const { value, done } = await reader.read();
@@ -33,11 +33,17 @@ export class SerialTransport implements Transport {
           this.processBuffer();
         }
       } catch (e) {
-        console.error("Serial read error:", e);
+        console.error("Serial read error, restarting reader:", e);
       } finally {
         reader.releaseLock();
       }
-    })();
+      // Auto-restart if port is still open
+      if (this.port?.readable) {
+        console.log("Serial reader restarting...");
+        this.startReading();
+      }
+    };
+    readLoop();
   }
 
   private processBuffer(): void {
