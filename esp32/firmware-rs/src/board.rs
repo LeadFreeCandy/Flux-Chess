@@ -116,15 +116,8 @@ impl Board {
     // ── Board State ───────────────────────────────────────────
 
     pub fn get_board_state(&mut self) -> BoardState {
-        let raw = self.hw.read_all_sensors();
-        let mut strengths = [[0u16; SENSOR_ROWS]; SENSOR_COLS];
-        for i in 0..NUM_HALL_SENSORS {
-            let col = i % SENSOR_COLS;
-            let row = i / SENSOR_COLS;
-            strengths[col][row] = raw[i];
-        }
         BoardState {
-            raw_strengths: strengths,
+            raw_strengths: self.hw.read_all_sensors(),
             piece_count: 0,
         }
     }
@@ -152,10 +145,10 @@ impl Board {
         let mut sums = [[0u32; SENSOR_ROWS]; SENSOR_COLS];
         for _ in 0..samples {
             let raw = self.hw.read_all_sensors();
-            for i in 0..NUM_HALL_SENSORS {
-                let col = i % SENSOR_COLS;
-                let row = i / SENSOR_COLS;
-                sums[col][row] += raw[i] as u32;
+            for col in 0..SENSOR_COLS {
+                for row in 0..SENSOR_ROWS {
+                    sums[col][row] += raw[col][row] as u32;
+                }
             }
             crate::hardware::blocking_delay_us(10_000);
         }

@@ -84,12 +84,14 @@ impl Hardware {
         }
     }
 
-    pub fn read_all_sensors(&mut self) -> [u16; NUM_HALL_SENSORS] {
-        let mut values = [0u16; NUM_HALL_SENSORS];
+    pub fn read_all_sensors(&mut self) -> SensorGrid<u16> {
+        let mut grid = [[0u16; SENSOR_ROWS]; SENSOR_COLS];
         for i in 0..NUM_HALL_SENSORS {
-            values[i] = self.read_sensor(i as u8);
+            let col = i % SENSOR_COLS;
+            let row = i / SENSOR_COLS;
+            grid[col][row] = self.read_sensor(i as u8);
         }
-        values
+        grid
     }
 
     // ── Coil Pulse ─────────────────────────────────────────────

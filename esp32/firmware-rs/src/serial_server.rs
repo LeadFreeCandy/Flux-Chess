@@ -74,6 +74,8 @@ fn build_commands() -> &'static [Command] {
             |board, req| board.pulse_coil(req.x, req.y, req.duration_us)),
         void_command!("get_board_state",
             |board| board.get_board_state()),
+        void_command!("get_config",
+            |_board| BoardConfig::current()),
         typed_command!("set_rgb", RGBColor,
             |board, req| board.set_rgb(req.r, req.g, req.b)),
         typed_command!("calibrate", CalibrateParams,
