@@ -30,7 +30,10 @@ pub struct Board {
 
 impl Board {
     pub fn new(hw: Hardware) -> Self {
-        Self { hw, event_queue: Vec::new() }
+        Self {
+            hw,
+            event_queue: Vec::new(),
+        }
     }
 
     // ── Monitor Tick ──────────────────────────────────────────
@@ -38,10 +41,7 @@ impl Board {
 
     pub fn tick(&mut self) {
         let state = self.get_board_state();
-        self.event_queue.push(BoardEvent::BoardChanged(BoardChangedEvent {
-            raw_strengths: state.raw_strengths,
-            piece_count: state.piece_count,
-        }));
+        self.event_queue.push(BoardEvent::BoardChanged);
     }
 
     pub fn drain_events(&mut self) -> Vec<BoardEvent> {
@@ -74,19 +74,40 @@ impl Board {
             None => {
                 let lx = x as usize % SR_BLOCK;
                 let ly = y as usize % SR_BLOCK;
-                log::warn!("pulseCoil REJECT: ({},{}) no coil (local {},{} in block {},{})",
-                    x, y, lx, ly, x as usize / SR_BLOCK, y as usize / SR_BLOCK);
+                log::warn!(
+                    "pulseCoil REJECT: ({},{}) no coil (local {},{} in block {},{})",
+                    x,
+                    y,
+                    lx,
+                    ly,
+                    x as usize / SR_BLOCK,
+                    y as usize / SR_BLOCK
+                );
                 return PulseResult::Failure(PulseError::InvalidCoil);
             }
         };
 
         let sr = bit / 8;
         let pin = bit % 8;
-        log::info!("pulseCoil: ({},{}) -> SR{} pin {} (bit {}), delegating to hw", x, y, sr, pin, bit);
+        log::info!(
+            "pulseCoil: ({},{}) -> SR{} pin {} (bit {}), delegating to hw",
+            x,
+            y,
+            sr,
+            pin,
+            bit
+        );
 
         let result = self.hw.pulse_bit(bit, duration_us);
         match &result {
-            PulseResult::Success => log::info!("pulseCoil OK: ({},{}) pulsed for {}us via SR{} pin {}", x, y, duration_us, sr, pin),
+            PulseResult::Success => log::info!(
+                "pulseCoil OK: ({},{}) pulsed for {}us via SR{} pin {}",
+                x,
+                y,
+                duration_us,
+                sr,
+                pin
+            ),
             PulseResult::Failure(e) => log::warn!("pulseCoil FAIL: SR{} pin {} ({:?})", sr, pin, e),
         }
         result
@@ -121,72 +142,66 @@ impl Board {
         log::info!("calibrate: {} samples, {}us pulse", samples, pulse_us);
 
         let mut result = CalibrationResult {
-            sensors: core::array::from_fn(|_| SensorCalibration {
-                baseline: 0,
-                coil_on: 0,
-                delta: 0,
-            }),
+            sensors: core::array::from_fn(|_| core::array::from_fn(|_| SensorCalibration {
+                baseline: 0, coil_on: 0, magnet_present: 0,
+            })),
         };
 
         // Step 1: measure baseline (all coils off, average over N samples)
         log::info!("calibrate: measuring baseline...");
-        let mut sums = [0u32; NUM_SENSORS];
+        let mut sums = [[0u32; SENSOR_ROWS]; SENSOR_COLS];
         for _ in 0..samples {
             let raw = self.hw.read_all_sensors();
-            for i in 0..NUM_SENSORS {
-                sums[i] += raw[i] as u32;
+            for i in 0..NUM_HALL_SENSORS {
+                let col = i % SENSOR_COLS;
+                let row = i / SENSOR_COLS;
+                sums[col][row] += raw[i] as u32;
             }
             crate::hardware::blocking_delay_us(10_000);
         }
-        for i in 0..NUM_SENSORS {
-            result.sensors[i].baseline = (sums[i] / samples as u32) as u16;
+        for col in 0..SENSOR_COLS {
+            for row in 0..SENSOR_ROWS {
+                result.sensors[col][row].baseline = (sums[col][row] / samples as u32) as u16;
+            }
         }
 
         // Step 2: for each sensor, pulse its aligned coil and read
         log::info!("calibrate: measuring coil-on levels...");
-        for i in 0..NUM_SENSORS {
-            let col = (i % SENSOR_COLS) as u8;
-            let row = (i / SENSOR_COLS) as u8;
-            let x = col * SR_BLOCK as u8;
-            let y = row * SR_BLOCK as u8;
+        for col in 0..SENSOR_COLS {
+            for row in 0..SENSOR_ROWS {
+                let i = col + row * SENSOR_COLS;
+                let x = (col * SR_BLOCK) as u8;
+                let y = (row * SR_BLOCK) as u8;
 
-            let bit = match Self::coord_to_bit(x, y) {
-                Some(b) => b,
-                None => {
-                    log::warn!("calibrate: no coil at ({},{}) for sensor {}", x, y, i);
-                    continue;
-                }
-            };
+                let bit = match Self::coord_to_bit(x, y) {
+                    Some(b) => b,
+                    None => {
+                        log::warn!("calibrate: no coil at ({},{}) for sensor {}", x, y, i);
+                        continue;
+                    }
+                };
 
-            // Pulse the coil
-            self.hw.sr_set_bit(bit, true);
-            self.hw.sr_write();
-            self.hw.sr_set_oe(true);
-            crate::hardware::blocking_delay_us(pulse_us);
+                self.hw.sr_set_bit(bit, true);
+                self.hw.sr_write();
+                self.hw.sr_set_oe(true);
+                crate::hardware::blocking_delay_us(pulse_us);
 
-            // Read sensor while coil is on
-            let reading = self.hw.read_sensor(i as u8);
-            result.sensors[i].coil_on = reading;
+                let reading = self.hw.read_sensor(i as u8);
+                result.sensors[col][row].coil_on = reading;
 
-            // Turn off
-            self.hw.sr_set_bit(bit, false);
-            self.hw.sr_write();
-            self.hw.sr_set_oe(false);
+                self.hw.sr_set_bit(bit, false);
+                self.hw.sr_write();
+                self.hw.sr_set_oe(false);
 
-            result.sensors[i].delta = reading as i32 - result.sensors[i].baseline as i32;
+                log::info!(
+                    "calibrate: sensor ({},{}) baseline={} coil_on={}",
+                    col, row,
+                    result.sensors[col][row].baseline,
+                    result.sensors[col][row].coil_on,
+                );
 
-            log::info!(
-                "calibrate: sensor {} ({},{}) baseline={} coil_on={} delta={}",
-                i,
-                x,
-                y,
-                result.sensors[i].baseline,
-                result.sensors[i].coil_on,
-                result.sensors[i].delta
-            );
-
-            // Wait for thermal cooldown between coils
-            crate::hardware::blocking_delay_us(100_000);
+                crate::hardware::blocking_delay_us(100_000);
+            }
         }
 
         log::info!("calibrate: done");

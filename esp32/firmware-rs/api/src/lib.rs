@@ -51,6 +51,31 @@ pub const SENSOR_ROWS: usize = 3;
 pub const MAX_PULSE_US: u32 = 500;
 pub const NUM_SENSORS: usize = SENSOR_COLS * SENSOR_ROWS;
 
+pub type SensorGrid<T> = [[T; SENSOR_ROWS]; SENSOR_COLS];
+
+api_response! {
+    pub struct BoardConfig {
+        pub grid_cols: u8,
+        pub grid_rows: u8,
+        pub sensor_cols: u8,
+        pub sensor_rows: u8,
+        pub max_pulse_us: u32,
+    }
+}
+
+impl BoardConfig {
+    pub fn current() -> Self {
+        Self {
+            grid_cols: GRID_COLS as u8,
+            grid_rows: GRID_ROWS as u8,
+            sensor_cols: SENSOR_COLS as u8,
+            sensor_rows: SENSOR_ROWS as u8,
+            max_pulse_us: MAX_PULSE_US,
+        }
+    }
+}
+pub type CoilGrid<T> = [[T; GRID_ROWS]; GRID_COLS];
+
 // ── Enums ────────────────────────────────────────────────────
 
 api_enum! {
@@ -98,7 +123,7 @@ api_response! {
 
 api_response! {
     pub struct BoardState {
-        pub raw_strengths: [[u16; SENSOR_ROWS]; SENSOR_COLS],
+        pub raw_strengths: SensorGrid<u16>,
         pub piece_count: u8,
     }
 }
@@ -107,13 +132,13 @@ api_response! {
     pub struct SensorCalibration {
         pub baseline: u16,
         pub coil_on: u16,
-        pub delta: i32,
+        pub magnet_present: u16,
     }
 }
 
 api_response! {
     pub struct CalibrationResult {
-        pub sensors: [SensorCalibration; NUM_SENSORS],
+        pub sensors: SensorGrid<SensorCalibration>,
     }
 }
 
@@ -126,16 +151,8 @@ api_response! {
 // ── Events ────────────────────────────────────────────────────
 
 api_response! {
-    pub struct BoardChangedEvent {
-        pub raw_strengths: [[u16; SENSOR_ROWS]; SENSOR_COLS],
-        pub piece_count: u8,
-    }
-}
-
-api_response! {
     #[serde(tag = "event", content = "data")]
     pub enum BoardEvent {
-        #[serde(rename = "board_changed")]
-        BoardChanged(BoardChangedEvent),
+        BoardChanged
     }
 }
