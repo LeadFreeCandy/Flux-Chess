@@ -9,3 +9,4 @@ frontend/dist/
 frontend/src/generated/
 data/
 codegen/.venv/
+**/target/
