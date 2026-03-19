@@ -47,12 +47,7 @@ impl Board {
                 GRID_COLS,
                 GRID_ROWS
             );
-            return PulseResult::FAILURE(PulseError::INVALID_COIL);
-        }
-
-        if duration_ms > MAX_PULSE_MS {
-            log::warn!("pulseCoil REJECT: {}ms exceeds max {}ms", duration_ms, MAX_PULSE_MS);
-            return PulseResult::FAILURE(PulseError::PULSE_TOO_LONG);
+            return PulseResult::Failure(PulseError::InvalidCoil);
         }
 
         let bit = match Self::coord_to_bit(x, y) {
@@ -62,7 +57,7 @@ impl Board {
                 let ly = y as usize % SR_BLOCK;
                 log::warn!("pulseCoil REJECT: ({},{}) no coil (local {},{} in block {},{})",
                     x, y, lx, ly, x as usize / SR_BLOCK, y as usize / SR_BLOCK);
-                return PulseResult::FAILURE(PulseError::INVALID_COIL);
+                return PulseResult::Failure(PulseError::InvalidCoil);
             }
         };
 
@@ -70,13 +65,12 @@ impl Board {
         let pin = bit % 8;
         log::info!("pulseCoil: ({},{}) -> SR{} pin {} (bit {}), delegating to hw", x, y, sr, pin, bit);
 
-        if !self.hw.pulse_bit(bit, duration_ms) {
-            log::warn!("pulseCoil FAIL: hw refused SR{} pin {} (thermal)", sr, pin);
-            return PulseResult::FAILURE(PulseError::THERMAL_LIMIT);
+        let result = self.hw.pulse_bit(bit, duration_ms);
+        match &result {
+            PulseResult::Success => log::info!("pulseCoil OK: ({},{}) pulsed for {}ms via SR{} pin {}", x, y, duration_ms, sr, pin),
+            PulseResult::Failure(e) => log::warn!("pulseCoil FAIL: SR{} pin {} ({:?})", sr, pin, e),
         }
-
-        log::info!("pulseCoil OK: ({},{}) pulsed for {}ms via SR{} pin {}", x, y, duration_ms, sr, pin);
-        PulseResult::SUCCESS
+        result
     }
 
     // ── Board State ───────────────────────────────────────────

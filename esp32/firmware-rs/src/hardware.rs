@@ -9,6 +9,7 @@ use esp_hal::peripherals::*;
 use esp_hal::spi::master::Spi;
 use esp_hal::Blocking;
 
+use crate::api::*;
 use crate::pins::*;
 
 const THERMAL_COOLDOWN_MS: u64 = 500;
@@ -35,31 +36,51 @@ impl Hardware {
         oe: Output<'static>,
         adc1_periph: ADC1<'static>,
         adc2_periph: ADC2<'static>,
-        g1: GPIO1<'static>, g2: GPIO2<'static>, g3: GPIO3<'static>,
-        g4: GPIO4<'static>, g5: GPIO5<'static>, g6: GPIO6<'static>,
-        g7: GPIO7<'static>, g8: GPIO8<'static>, g9: GPIO9<'static>,
-        g10: GPIO10<'static>, g11: GPIO11<'static>, g12: GPIO12<'static>,
+        g1: GPIO1<'static>,
+        g2: GPIO2<'static>,
+        g3: GPIO3<'static>,
+        g4: GPIO4<'static>,
+        g5: GPIO5<'static>,
+        g6: GPIO6<'static>,
+        g7: GPIO7<'static>,
+        g8: GPIO8<'static>,
+        g9: GPIO9<'static>,
+        g10: GPIO10<'static>,
+        g11: GPIO11<'static>,
+        g12: GPIO12<'static>,
     ) -> Self {
         let a = Attenuation::_11dB;
 
         let mut c1 = AdcConfig::new();
         let adc1_pins: Vec<Box<dyn Adc1Read>> = vec![
-            Box::new(c1.enable_pin(g1, a)),  Box::new(c1.enable_pin(g2, a)),
-            Box::new(c1.enable_pin(g3, a)),  Box::new(c1.enable_pin(g4, a)),
-            Box::new(c1.enable_pin(g5, a)),  Box::new(c1.enable_pin(g6, a)),
-            Box::new(c1.enable_pin(g7, a)),  Box::new(c1.enable_pin(g8, a)),
-            Box::new(c1.enable_pin(g9, a)),  Box::new(c1.enable_pin(g10, a)),
+            Box::new(c1.enable_pin(g1, a)),
+            Box::new(c1.enable_pin(g2, a)),
+            Box::new(c1.enable_pin(g3, a)),
+            Box::new(c1.enable_pin(g4, a)),
+            Box::new(c1.enable_pin(g5, a)),
+            Box::new(c1.enable_pin(g6, a)),
+            Box::new(c1.enable_pin(g7, a)),
+            Box::new(c1.enable_pin(g8, a)),
+            Box::new(c1.enable_pin(g9, a)),
+            Box::new(c1.enable_pin(g10, a)),
         ];
         let adc1 = Adc::new(adc1_periph, c1);
 
         let mut c2 = AdcConfig::new();
         let adc2_pins: Vec<Box<dyn Adc2Read>> = vec![
-            Box::new(c2.enable_pin(g11, a)), Box::new(c2.enable_pin(g12, a)),
+            Box::new(c2.enable_pin(g11, a)),
+            Box::new(c2.enable_pin(g12, a)),
         ];
         let adc2 = Adc::new(adc2_periph, c2);
 
         let mut hw = Self {
-            spi, latch, oe, adc1, adc2, adc1_pins, adc2_pins,
+            spi,
+            latch,
+            oe,
+            adc1,
+            adc2,
+            adc1_pins,
+            adc2_pins,
             sr_state: [0u8; NUM_SHIFT_REGISTERS],
             last_pulse_ms: [0u64; SR_CHAIN_BITS],
             bit_on_since: [0u64; SR_CHAIN_BITS],
@@ -67,7 +88,11 @@ impl Hardware {
 
         hw.sr_set_oe(false);
         hw.sr_clear();
-        log::info!("Hardware init: {} SRs, {} sensors", NUM_SHIFT_REGISTERS, NUM_HALL_SENSORS);
+        log::info!(
+            "Hardware init: {} SRs, {} sensors",
+            NUM_SHIFT_REGISTERS,
+            NUM_HALL_SENSORS
+        );
         hw
     }
 
@@ -75,7 +100,9 @@ impl Hardware {
 
     pub fn read_sensor(&mut self, index: u8) -> u16 {
         let i = index as usize;
-        if i >= NUM_HALL_SENSORS { return 0; }
+        if i >= NUM_HALL_SENSORS {
+            return 0;
+        }
         if i < self.adc1_pins.len() {
             self.adc1_pins[i].read(&mut self.adc1)
         } else {
@@ -93,26 +120,16 @@ impl Hardware {
 
     // ── Coil Pulse ─────────────────────────────────────────────
 
-    pub fn pulse_bit(&mut self, global_bit: usize, duration_ms: u16) -> bool {
+    pub fn pulse_bit(&mut self, global_bit: usize, duration_ms: u16) -> PulseResult {
+        let result = self.validate_pulse_bit(global_bit, duration_ms);
+        if let PulseResult::Failure(_) = result {
+            return result;
+        }
+
         let sr = global_bit / 8;
         let pin = global_bit % 8;
-
-        if global_bit >= SR_CHAIN_BITS {
-            log::warn!("pulseBit REJECT: bit {} out of range", global_bit);
-            return false;
-        }
-        if pin >= BITS_PER_SR {
-            log::warn!("pulseBit REJECT: SR{} pin {} unused", sr, pin);
-            return false;
-        }
-        if !self.can_pulse(global_bit) {
-            let elapsed = now_ms() - self.last_pulse_ms[global_bit];
-            let remaining = THERMAL_COOLDOWN_MS - elapsed;
-            log::warn!("pulseBit REJECT: SR{} pin {} thermal ({}ms remaining)", sr, pin, remaining);
-            return false;
-        }
-
         log::info!("pulseBit START: SR{} pin {} for {}ms", sr, pin, duration_ms);
+
         self.sr_set_bit(global_bit, true);
         self.sr_write();
         self.sr_set_oe(true);
@@ -125,12 +142,20 @@ impl Hardware {
 
         self.last_pulse_ms[global_bit] = now_ms();
         log::info!("pulseBit DONE: SR{} pin {}, cooldown {}ms", sr, pin, THERMAL_COOLDOWN_MS);
-        true
+        PulseResult::Success
     }
 
-    pub fn can_pulse(&self, global_bit: usize) -> bool {
-        if global_bit >= SR_CHAIN_BITS { return false; }
-        now_ms() - self.last_pulse_ms[global_bit] >= THERMAL_COOLDOWN_MS
+    pub fn validate_pulse_bit(&self, global_bit: usize, duration_ms: u16) -> PulseResult {
+        if global_bit >= SR_CHAIN_BITS {
+            return PulseResult::Failure(PulseError::InvalidCoil);
+        }
+        if now_ms() - self.last_pulse_ms[global_bit] < THERMAL_COOLDOWN_MS {
+            return PulseResult::Failure(PulseError::ThermalLimit);
+        }
+        if duration_ms > MAX_PULSE_MS {
+            return PulseResult::Failure(PulseError::PulseTooLong);
+        }
+        PulseResult::Success
     }
 
     // ── Shift Registers (SPI) ──────────────────────────────────
@@ -146,14 +171,18 @@ impl Hardware {
     }
 
     pub fn sr_set_bit(&mut self, bit: usize, val: bool) {
-        if bit >= SR_CHAIN_BITS { return; }
+        if bit >= SR_CHAIN_BITS {
+            return;
+        }
         let reg = bit / 8;
         let pos = bit % 8;
         if val {
             self.sr_state[reg] |= 1 << pos;
             if self.bit_on_since[bit] == 0 {
                 self.bit_on_since[bit] = now_ms();
-                if self.bit_on_since[bit] == 0 { self.bit_on_since[bit] = 1; }
+                if self.bit_on_since[bit] == 0 {
+                    self.bit_on_since[bit] = 1;
+                }
             }
         } else {
             self.sr_state[reg] &= !(1 << pos);
@@ -168,7 +197,11 @@ impl Hardware {
     }
 
     pub fn sr_set_oe(&mut self, enabled: bool) {
-        if enabled { self.oe.set_low(); } else { self.oe.set_high(); }
+        if enabled {
+            self.oe.set_low();
+        } else {
+            self.oe.set_high();
+        }
     }
 
     // ── Watchdog ──────────────────────────────────────────────
@@ -186,12 +219,19 @@ impl Hardware {
                     self.bit_on_since[bit] = 0;
                     self.last_pulse_ms[bit] = now;
                     forced = true;
-                    log::error!("WATCHDOG: force-cleared SR{} pin {} (on for {}ms)", reg, pos, on_for);
+                    log::error!(
+                        "WATCHDOG: force-cleared SR{} pin {} (on for {}ms)",
+                        reg,
+                        pos,
+                        on_for
+                    );
                 }
             }
         }
         self.sr_write();
-        if forced { self.sr_set_oe(false); }
+        if forced {
+            self.sr_set_oe(false);
+        }
     }
 
     // ── RGB LED ────────────────────────────────────────────────
@@ -214,7 +254,9 @@ impl Hardware {
 }
 
 fn now_ms() -> u64 {
-    esp_hal::time::Instant::now().duration_since_epoch().as_millis()
+    esp_hal::time::Instant::now()
+        .duration_since_epoch()
+        .as_millis()
 }
 
 pub fn blocking_delay_ms(ms: u32) {
