@@ -89,7 +89,7 @@ api_request! {
 // ── Responses ─────────────────────────────────────────────────
 
 api_response! {
-    #[serde(tag = "status")]
+    #[serde(tag = "status", content = "error")]
     pub enum PulseResult {
         Success,
         Failure(PulseError),
