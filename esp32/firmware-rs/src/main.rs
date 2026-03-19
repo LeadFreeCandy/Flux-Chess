@@ -25,10 +25,12 @@ mod board;
 mod hardware;
 mod pins;
 mod serial_server;
+mod storage;
 
 use board::Board;
 use hardware::Hardware;
 use serial_server::SerialServer;
+use storage::Storage;
 
 #[esp_hal::main]
 fn main() -> ! {

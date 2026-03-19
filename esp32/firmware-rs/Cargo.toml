@@ -14,6 +14,8 @@ critical-section = "1.2.0"
 esp32s3 = "0.34"
 log = "0.4"
 static_cell = "2"
+esp-nvs = { version = "0.3", features = ["esp32s3"] }
+esp-storage = { version = "0.8", features = ["esp32s3"] }
 
 [profile.dev]
 opt-level = "s"

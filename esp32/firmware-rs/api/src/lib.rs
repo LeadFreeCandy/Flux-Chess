@@ -32,6 +32,16 @@ macro_rules! api_request {
     };
 }
 
+macro_rules! api_data {
+    ($(#[$extra:meta])* pub struct $name:ident { $($body:tt)* }) => {
+        #[derive(Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+        #[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+        $(#[$extra])*
+        pub struct $name { $($body)* }
+    };
+}
+
 macro_rules! api_enum {
     ($(#[$extra:meta])* pub enum $name:ident { $($body:tt)* }) => {
         #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -48,33 +58,15 @@ pub const GRID_COLS: usize = 10;
 pub const GRID_ROWS: usize = 7;
 pub const SENSOR_COLS: usize = 4;
 pub const SENSOR_ROWS: usize = 3;
+pub const MAIN_GRID_COLS: usize = 10;
+pub const MAIN_GRID_ROWS: usize = 7;
+
 pub const MAX_PULSE_US: u32 = 500;
 pub const NUM_SENSORS: usize = SENSOR_COLS * SENSOR_ROWS;
 
 pub type SensorGrid<T> = [[T; SENSOR_ROWS]; SENSOR_COLS];
-
-api_response! {
-    pub struct BoardConfig {
-        pub grid_cols: u8,
-        pub grid_rows: u8,
-        pub sensor_cols: u8,
-        pub sensor_rows: u8,
-        pub max_pulse_us: u32,
-    }
-}
-
-impl BoardConfig {
-    pub fn current() -> Self {
-        Self {
-            grid_cols: GRID_COLS as u8,
-            grid_rows: GRID_ROWS as u8,
-            sensor_cols: SENSOR_COLS as u8,
-            sensor_rows: SENSOR_ROWS as u8,
-            max_pulse_us: MAX_PULSE_US,
-        }
-    }
-}
 pub type CoilGrid<T> = [[T; GRID_ROWS]; GRID_COLS];
+pub type MainGrid<T> = [[T; MAIN_GRID_ROWS]; MAIN_GRID_COLS];
 
 // ── Enums ────────────────────────────────────────────────────
 
@@ -123,12 +115,41 @@ api_response! {
 
 api_response! {
     pub struct BoardState {
-        pub raw_strengths: SensorGrid<u16>,
-        pub piece_count: u8,
+        pub raw_sensor_values: SensorGrid<u16>,
+        pub ids: CoilGrid<u8>,
+        pub timestamps: CoilGrid<u64>,
     }
 }
 
-api_response! {
+impl PartialEq for BoardState {
+    fn eq(&self, other: &Self) -> bool {
+        self.ids == other.ids
+    }
+}
+
+impl Eq for BoardState {}
+
+impl BoardState {
+    pub fn update_from_sensor_values(
+        &mut self,
+        raw_values: &SensorGrid<u16>,
+        calibration: &CalibrationResult,
+        debounce_duration_ms: u32,
+    ) {
+        // We need to compare the new sensor readings to the the old ones using the
+        // calibration values to determine if a piece has moved. Then we will update the
+        // current board ids
+        for row in 0..SENSOR_ROWS {
+            for col in 0..SENSOR_COLS {
+                let new_sensor_value = raw_values[col][row];
+                let sensor_calibration = &calibration.sensors[col][row];
+                let old_sensor_value = self.raw_sensor_values[col][row];
+            }
+        }
+    }
+}
+
+api_data! {
     pub struct SensorCalibration {
         pub baseline: u16,
         pub coil_on: u16,
@@ -136,7 +157,7 @@ api_response! {
     }
 }
 
-api_response! {
+api_data! {
     pub struct CalibrationResult {
         pub sensors: SensorGrid<SensorCalibration>,
     }
