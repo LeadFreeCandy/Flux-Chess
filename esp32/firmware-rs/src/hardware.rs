@@ -1,4 +1,9 @@
-use esp_hal::analog::adc::{Adc, AdcConfig, AdcPin, Attenuation};
+extern crate alloc;
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use esp_hal::analog::adc::{Adc, AdcChannel, AdcConfig, AdcPin, Attenuation};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::peripherals::*;
 use esp_hal::spi::master::Spi;
@@ -8,19 +13,24 @@ use crate::pins::*;
 
 const THERMAL_COOLDOWN_MS: u64 = 500;
 
-pub struct SensorPins {
-    s0:  AdcPin<GPIO1<'static>,  ADC1<'static>>,
-    s1:  AdcPin<GPIO2<'static>,  ADC1<'static>>,
-    s2:  AdcPin<GPIO3<'static>,  ADC1<'static>>,
-    s3:  AdcPin<GPIO4<'static>,  ADC1<'static>>,
-    s4:  AdcPin<GPIO5<'static>,  ADC1<'static>>,
-    s5:  AdcPin<GPIO6<'static>,  ADC1<'static>>,
-    s6:  AdcPin<GPIO7<'static>,  ADC1<'static>>,
-    s7:  AdcPin<GPIO8<'static>,  ADC1<'static>>,
-    s8:  AdcPin<GPIO9<'static>,  ADC1<'static>>,
-    s9:  AdcPin<GPIO10<'static>, ADC1<'static>>,
-    s10: AdcPin<GPIO11<'static>, ADC2<'static>>,
-    s11: AdcPin<GPIO12<'static>, ADC2<'static>>,
+// ── Type-erased sensor pin ───────────────────────────────────
+
+trait Adc1Pin {
+    fn read(&mut self, adc: &mut Adc<'static, ADC1<'static>, Blocking>) -> u16;
+}
+impl<P: AdcChannel> Adc1Pin for AdcPin<P, ADC1<'static>> {
+    fn read(&mut self, adc: &mut Adc<'static, ADC1<'static>, Blocking>) -> u16 {
+        adc.read_blocking(self)
+    }
+}
+
+trait Adc2Pin {
+    fn read(&mut self, adc: &mut Adc<'static, ADC2<'static>, Blocking>) -> u16;
+}
+impl<P: AdcChannel> Adc2Pin for AdcPin<P, ADC2<'static>> {
+    fn read(&mut self, adc: &mut Adc<'static, ADC2<'static>, Blocking>) -> u16 {
+        adc.read_blocking(self)
+    }
 }
 
 pub struct Hardware {
@@ -30,7 +40,8 @@ pub struct Hardware {
 
     adc1: Adc<'static, ADC1<'static>, Blocking>,
     adc2: Adc<'static, ADC2<'static>, Blocking>,
-    sensors: SensorPins,
+    adc1_pins: Vec<Box<dyn Adc1Pin>>,
+    adc2_pins: Vec<Box<dyn Adc2Pin>>,
 
     sr_state: [u8; NUM_SHIFT_REGISTERS],
     last_pulse_ms: [u64; SR_CHAIN_BITS],
@@ -52,26 +63,23 @@ impl Hardware {
         let a = Attenuation::_11dB;
 
         let mut c1 = AdcConfig::new();
-        let s0  = c1.enable_pin(g1, a);
-        let s1  = c1.enable_pin(g2, a);
-        let s2  = c1.enable_pin(g3, a);
-        let s3  = c1.enable_pin(g4, a);
-        let s4  = c1.enable_pin(g5, a);
-        let s5  = c1.enable_pin(g6, a);
-        let s6  = c1.enable_pin(g7, a);
-        let s7  = c1.enable_pin(g8, a);
-        let s8  = c1.enable_pin(g9, a);
-        let s9  = c1.enable_pin(g10, a);
+        let adc1_pins: Vec<Box<dyn Adc1Pin>> = vec![
+            Box::new(c1.enable_pin(g1, a)),  Box::new(c1.enable_pin(g2, a)),
+            Box::new(c1.enable_pin(g3, a)),  Box::new(c1.enable_pin(g4, a)),
+            Box::new(c1.enable_pin(g5, a)),  Box::new(c1.enable_pin(g6, a)),
+            Box::new(c1.enable_pin(g7, a)),  Box::new(c1.enable_pin(g8, a)),
+            Box::new(c1.enable_pin(g9, a)),  Box::new(c1.enable_pin(g10, a)),
+        ];
         let adc1 = Adc::new(adc1_periph, c1);
 
         let mut c2 = AdcConfig::new();
-        let s10 = c2.enable_pin(g11, a);
-        let s11 = c2.enable_pin(g12, a);
+        let adc2_pins: Vec<Box<dyn Adc2Pin>> = vec![
+            Box::new(c2.enable_pin(g11, a)), Box::new(c2.enable_pin(g12, a)),
+        ];
         let adc2 = Adc::new(adc2_periph, c2);
 
         let mut hw = Self {
-            spi, latch, oe, adc1, adc2,
-            sensors: SensorPins { s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11 },
+            spi, latch, oe, adc1, adc2, adc1_pins, adc2_pins,
             sr_state: [0u8; NUM_SHIFT_REGISTERS],
             last_pulse_ms: [0u64; SR_CHAIN_BITS],
             bit_on_since: [0u64; SR_CHAIN_BITS],
@@ -86,21 +94,12 @@ impl Hardware {
     // ── Hall Sensors ──────────────────────────────────────────
 
     pub fn read_sensor(&mut self, index: u8) -> u16 {
-        let s = &mut self.sensors;
-        match index {
-            0  => self.adc1.read_blocking(&mut s.s0),
-            1  => self.adc1.read_blocking(&mut s.s1),
-            2  => self.adc1.read_blocking(&mut s.s2),
-            3  => self.adc1.read_blocking(&mut s.s3),
-            4  => self.adc1.read_blocking(&mut s.s4),
-            5  => self.adc1.read_blocking(&mut s.s5),
-            6  => self.adc1.read_blocking(&mut s.s6),
-            7  => self.adc1.read_blocking(&mut s.s7),
-            8  => self.adc1.read_blocking(&mut s.s8),
-            9  => self.adc1.read_blocking(&mut s.s9),
-            10 => self.adc2.read_blocking(&mut s.s10),
-            11 => self.adc2.read_blocking(&mut s.s11),
-            _  => 0,
+        let i = index as usize;
+        if i >= NUM_HALL_SENSORS { return 0; }
+        if i < self.adc1_pins.len() {
+            self.adc1_pins[i].read(&mut self.adc1)
+        } else {
+            self.adc2_pins[i - self.adc1_pins.len()].read(&mut self.adc2)
         }
     }
 
