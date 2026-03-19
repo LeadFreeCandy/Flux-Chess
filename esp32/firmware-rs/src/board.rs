@@ -31,12 +31,12 @@ impl Board {
 
     // ── Coil Control ──────────────────────────────────────────
 
-    pub fn pulse_coil(&mut self, x: u8, y: u8, duration_ms: u16) -> PulseResult {
+    pub fn pulse_coil(&mut self, x: u8, y: u8, duration_us: u32) -> PulseResult {
         log::info!(
-            "pulseCoil: request at grid ({},{}) for {}ms",
+            "pulseCoil: request at grid ({},{}) for {}us",
             x,
             y,
-            duration_ms
+            duration_us
         );
 
         if x as usize >= GRID_COLS || y as usize >= GRID_ROWS {
@@ -65,9 +65,9 @@ impl Board {
         let pin = bit % 8;
         log::info!("pulseCoil: ({},{}) -> SR{} pin {} (bit {}), delegating to hw", x, y, sr, pin, bit);
 
-        let result = self.hw.pulse_bit(bit, duration_ms);
+        let result = self.hw.pulse_bit(bit, duration_us);
         match &result {
-            PulseResult::Success => log::info!("pulseCoil OK: ({},{}) pulsed for {}ms via SR{} pin {}", x, y, duration_ms, sr, pin),
+            PulseResult::Success => log::info!("pulseCoil OK: ({},{}) pulsed for {}us via SR{} pin {}", x, y, duration_us, sr, pin),
             PulseResult::Failure(e) => log::warn!("pulseCoil FAIL: SR{} pin {} ({:?})", sr, pin, e),
         }
         result
@@ -96,10 +96,10 @@ impl Board {
     //   sensor 4 → (0,3), sensor 5 → (3,3), sensor 6 → (6,3), sensor 7 → (9,3)
     //   sensor 8 → (0,6), sensor 9 → (3,6), sensor 10 → (6,6), sensor 11 → (9,6)
 
-    pub fn calibrate(&mut self, samples: u8, pulse_ms: u16) -> CalibrationResult {
+    pub fn calibrate(&mut self, samples: u8, pulse_us: u32) -> CalibrationResult {
         let samples = if samples == 0 { 10 } else { samples };
-        let pulse_ms = if pulse_ms == 0 { 50 } else { pulse_ms };
-        log::info!("calibrate: {} samples, {}ms pulse", samples, pulse_ms);
+        let pulse_us = if pulse_us == 0 { 50 } else { pulse_us };
+        log::info!("calibrate: {} samples, {}us pulse", samples, pulse_us);
 
         let mut result = CalibrationResult {
             sensors: core::array::from_fn(|_| SensorCalibration {
@@ -117,7 +117,7 @@ impl Board {
             for i in 0..NUM_SENSORS {
                 sums[i] += raw[i] as u32;
             }
-            crate::hardware::blocking_delay_ms(10);
+            crate::hardware::blocking_delay_us(10_000);
         }
         for i in 0..NUM_SENSORS {
             result.sensors[i].baseline = (sums[i] / samples as u32) as u16;
@@ -143,7 +143,7 @@ impl Board {
             self.hw.sr_set_bit(bit, true);
             self.hw.sr_write();
             self.hw.sr_set_oe(true);
-            crate::hardware::blocking_delay_ms(pulse_ms as u32);
+            crate::hardware::blocking_delay_us(pulse_us);
 
             // Read sensor while coil is on
             let reading = self.hw.read_sensor(i as u8);
@@ -167,7 +167,7 @@ impl Board {
             );
 
             // Wait for thermal cooldown between coils
-            crate::hardware::blocking_delay_ms(100);
+            crate::hardware::blocking_delay_us(100_000);
         }
 
         log::info!("calibrate: done");
@@ -200,7 +200,7 @@ impl Board {
     // ── Watchdog passthrough ──────────────────────────────────
 
     pub fn watchdog_tick(&mut self) {
-        self.hw.watchdog_tick(MAX_PULSE_MS);
+        self.hw.watchdog_tick(MAX_PULSE_US);
     }
 
     // ── Grid Mapping ──────────────────────────────────────────

@@ -8,7 +8,7 @@ pub const GRID_COLS: usize = 10;
 pub const GRID_ROWS: usize = 7;
 pub const SENSOR_COLS: usize = 4;
 pub const SENSOR_ROWS: usize = 3;
-pub const MAX_PULSE_MS: u16 = 1000;
+pub const MAX_PULSE_US: u32 = 500;
 
 // ── Enums ────────────────────────────────────────────────────
 
@@ -20,9 +20,9 @@ pub const MAX_PULSE_MS: u16 = 1000;
 )]
 #[allow(non_camel_case_types)]
 pub enum PulseError {
-    INVALID_COIL,
-    PULSE_TOO_LONG,
-    THERMAL_LIMIT,
+    InvalidCoil,
+    PulseTooLong,
+    ThermalLimit,
 }
 
 // ── Types ─────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ pub enum PulseError {
 pub struct PulseCoilParams {
     pub x: u8,
     pub y: u8,
-    pub duration_ms: u16,
+    pub duration_us: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,8 +59,8 @@ pub struct RGBColor {
     ts(export, export_to = "../../../frontend/src/generated/bindings/")
 )]
 pub enum PulseResult {
-    SUCCESS,
-    FAILURE(PulseError),
+    Success,
+    Failure(PulseError),
 }
 
 #[derive(Debug, Serialize)]
@@ -106,7 +106,7 @@ pub struct CalibrationResult {
 )]
 pub struct CalibrateParams {
     pub samples: u8,
-    pub pulse_ms: u16,
+    pub pulse_us: u32,
 }
 
 #[derive(Debug, Serialize)]

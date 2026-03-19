@@ -71,13 +71,13 @@ macro_rules! void_command {
 fn build_commands() -> &'static [Command] {
     &[
         typed_command!("pulse_coil", PulseCoilParams,
-            |board, req| board.pulse_coil(req.x, req.y, req.duration_ms)),
+            |board, req| board.pulse_coil(req.x, req.y, req.duration_us)),
         void_command!("get_board_state",
             |board| board.get_board_state()),
         typed_command!("set_rgb", RGBColor,
             |board, req| board.set_rgb(req.r, req.g, req.b)),
         typed_command!("calibrate", CalibrateParams,
-            |board, req| board.calibrate(req.samples, req.pulse_ms)),
+            |board, req| board.calibrate(req.samples, req.pulse_us)),
         void_command!("shutdown",
             |board| CommandResult { success: true }),
     ]
