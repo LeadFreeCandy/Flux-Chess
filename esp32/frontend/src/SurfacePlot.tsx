@@ -61,7 +61,7 @@ function SurfaceMesh({ data }: { data: number[][] }) {
       const py = pos.getY(i) + (rows - 1) / 2;
       const z = bicubicInterpolate(data, px, py) / max;
 
-      pos.setZ(i, z * 2);
+      pos.setZ(i, z * 0.67);
 
       // Color: blue (low) → cyan → green → yellow → red (high)
       const hue = (1 - z) * 0.65;

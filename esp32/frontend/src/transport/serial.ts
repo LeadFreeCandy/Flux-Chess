@@ -66,7 +66,17 @@ export class SerialTransport implements Transport {
     params: Record<string, unknown>
   ): Promise<Res> {
     if (!this.port?.writable) throw new Error("Serial port not connected");
-    if (this.pending) throw new Error("Serial transport is busy");
+
+    // Wait for any in-flight request to complete before sending
+    if (this.pending) {
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (!this.pending) resolve();
+          else setTimeout(check, 10);
+        };
+        check();
+      });
+    }
 
     const msg = JSON.stringify({ method, params }) + "\n";
     emitLog("tx", msg.trim());

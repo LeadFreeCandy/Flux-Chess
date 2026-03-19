@@ -191,11 +191,12 @@ function App() {
     try {
       const res = await getBoardState();
       setBoardState(res);
-    } catch (e) {
-      setStatus(`Poll error: ${e}`);
+    } catch {
+      // Swallow errors — don't stop polling
     }
+    // Always re-schedule if still polling
     if (pollingRef.current) {
-      setTimeout(pollBoardState, 100); // 10Hz
+      setTimeout(pollBoardState, 100);
     }
   }, []);
 
