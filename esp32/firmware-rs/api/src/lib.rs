@@ -118,3 +118,22 @@ pub struct CalibrateParams {
 pub struct CommandResult {
     pub success: bool,
 }
+
+// ── Events (server → client, unsolicited) ─────────────────────
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+pub struct BoardChangedEvent {
+    pub raw_strengths: [[u16; SENSOR_ROWS]; SENSOR_COLS],
+    pub piece_count: u8,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "event", content = "data")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export, export_to = "../../../frontend/src/generated/bindings/"))]
+pub enum BoardEvent {
+    #[serde(rename = "board_changed")]
+    BoardChanged(BoardChangedEvent),
+}

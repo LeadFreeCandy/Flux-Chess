@@ -69,13 +69,30 @@ fn main() -> ! {
     tx.write(b"{\"type\":\"ready\"}\n").ok();
 
     let mut last_watchdog = esp_hal::time::Instant::now();
+    let mut last_tick = esp_hal::time::Instant::now();
     loop {
+        // Handle serial commands
         let mut buf = [0u8; 64];
         let count = rx.drain_rx_fifo(&mut buf);
         for i in 0..count {
             server.feed(buf[i], &mut board, &mut tx);
         }
 
+        // Board monitor tick (~20Hz)
+        if last_tick.elapsed().as_millis() >= 50 {
+            last_tick = esp_hal::time::Instant::now();
+            board.tick();
+        }
+
+        // Drain events and send over serial
+        for event in board.drain_events() {
+            if let Ok(json) = serde_json::to_string(&event) {
+                let line = alloc::format!("{{\"type\":\"event\",{}}}\n", &json[1..json.len()-1]);
+                tx.write(line.as_bytes()).ok();
+            }
+        }
+
+        // Watchdog
         if last_watchdog.elapsed().as_millis() >= 100 {
             last_watchdog = esp_hal::time::Instant::now();
             board.watchdog_tick();

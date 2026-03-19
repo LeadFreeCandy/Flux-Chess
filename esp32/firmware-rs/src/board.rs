@@ -1,3 +1,6 @@
+extern crate alloc;
+use alloc::vec::Vec;
+
 use crate::api::*;
 use crate::hardware::Hardware;
 use crate::pins::NUM_HALL_SENSORS;
@@ -22,11 +25,27 @@ const SR_BLOCK: usize = 3;
 
 pub struct Board {
     hw: Hardware,
+    event_queue: Vec<BoardEvent>,
 }
 
 impl Board {
     pub fn new(hw: Hardware) -> Self {
-        Self { hw }
+        Self { hw, event_queue: Vec::new() }
+    }
+
+    // ── Monitor Tick ──────────────────────────────────────────
+    // Called from the main loop. Reads sensors and pushes events.
+
+    pub fn tick(&mut self) {
+        let state = self.get_board_state();
+        self.event_queue.push(BoardEvent::BoardChanged(BoardChangedEvent {
+            raw_strengths: state.raw_strengths,
+            piece_count: state.piece_count,
+        }));
+    }
+
+    pub fn drain_events(&mut self) -> Vec<BoardEvent> {
+        core::mem::take(&mut self.event_queue)
     }
 
     // ── Coil Control ──────────────────────────────────────────
