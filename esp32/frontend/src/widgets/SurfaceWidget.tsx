@@ -1,10 +1,10 @@
 import { useState, useRef, useCallback } from "react";
-import { getBoardState, type GetBoardStateResponse } from "../generated/api";
+import { getBoardState, type BoardStateResponse } from "../generated/api";
 import SurfacePlot from "../SurfacePlot";
 import { type WidgetProps, btnStyle } from "./shared";
 
 export default function SurfaceWidget({ onStatus }: WidgetProps) {
-  const [boardState, setBoardState] = useState<GetBoardStateResponse | null>(null);
+  const [boardState, setBoardState] = useState<BoardStateResponse | null>(null);
   const [polling, setPolling] = useState(false);
   const pollingRef = useRef(false);
 
@@ -33,7 +33,7 @@ export default function SurfaceWidget({ onStatus }: WidgetProps) {
         </button>
       </div>
       {boardState ? (
-        <SurfacePlot data={boardState.raw_strengths} />
+        <SurfacePlot data={boardState.raw_sensor_values} />
       ) : (
         <div style={{ color: "#555", padding: 40, textAlign: "center" }}>Start polling to see sensor data</div>
       )}

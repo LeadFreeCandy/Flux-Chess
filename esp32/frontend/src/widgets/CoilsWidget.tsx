@@ -20,8 +20,8 @@ export default function CoilsWidget({ onStatus }: WidgetProps) {
     const key = `${x},${y}`;
     setPulsing(key);
     try {
-      const res = await pulseCoil({ x, y, duration_ms: pulseDuration });
-      onStatus(res.success ? `Pulsed (${x},${y})` : `Error: ${res.error}`);
+      const res = await pulseCoil({ x, y, duration_us: pulseDuration });
+      onStatus(res.status === "Success" ? `Pulsed (${x},${y})` : `Error: ${"error" in res ? res.error : "unknown"}`);
     } catch (e) { onStatus(`Error: ${e}`); }
     setPulsing(null);
   };
