@@ -2,39 +2,30 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc"
-BUILD_DIR="$ROOT/build"
 SERIAL_PORT="/dev/cu.usbmodem101"
 
-echo "==> Running codegen..."
-python3 "$ROOT/codegen/generate.py"
+# ── Build Rust firmware ───────────────────────────────────────
+echo "==> Building Rust firmware..."
+export PATH="$HOME/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/bin:$PATH"
+export LIBCLANG_PATH="$HOME/.rustup/toolchains/esp/xtensa-esp32-elf-clang/esp-20.1.1_20250829/esp-clang/lib"
 
-echo "==> Checking firmware..."
-SRC_HASH=$(find "$ROOT/firmware" -name '*.h' -o -name '*.ino' | \
-  sort | xargs shasum | shasum | cut -d' ' -f1)
-HASH_FILE="$BUILD_DIR/.src_hash"
+cd "$ROOT/firmware-rs"
+cargo build --release 2>&1 | tail -3
 
-if [ ! -f "$HASH_FILE" ] || [ "$SRC_HASH" != "$(cat "$HASH_FILE")" ]; then
-  echo "==> Compiling firmware..."
-  arduino-cli compile \
-    --fqbn "$FQBN" \
-    --build-path "$BUILD_DIR" \
-    "$ROOT/firmware"
+# ── Flash ─────────────────────────────────────────────────────
+echo "==> Flashing..."
+espflash flash --port "$SERIAL_PORT" \
+  "$ROOT/firmware-rs/target/xtensa-esp32s3-none-elf/release/fluxchess-firmware"
 
-  echo "==> Uploading firmware..."
-  arduino-cli upload \
-    --fqbn "$FQBN" \
-    -p "$SERIAL_PORT" \
-    --input-dir "$BUILD_DIR"
+echo "==> Waiting for ESP32 to boot..."
+sleep 3
 
-  echo "$SRC_HASH" > "$HASH_FILE"
+# ── Generate TypeScript bindings ──────────────────────────────
+echo "==> Generating TypeScript bindings..."
+cd "$ROOT/firmware-rs/api"
+cargo +stable test --features ts --target aarch64-apple-darwin 2>&1 | tail -1
 
-  echo "==> Waiting for ESP32 to boot..."
-  sleep 3
-else
-  echo "==> Firmware unchanged, skipping upload."
-fi
-
+# ── Start frontend ────────────────────────────────────────────
 echo "==> Starting frontend dev server..."
 cd "$ROOT/frontend"
 VITE_TRANSPORT=serial npx vite --open
