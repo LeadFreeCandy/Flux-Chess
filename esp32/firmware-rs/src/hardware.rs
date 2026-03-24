@@ -68,6 +68,18 @@ impl Hardware {
 
         hw.sr_set_oe(false);
         hw.sr_clear();
+
+        // Disable USB-OTG pull resistors on GPIO 1/2 (D-/D+)
+        // Without this, ADC channels 0-1 read ~700 instead of true analog value
+        let usb_wrap = unsafe { &*esp32s3::USB_WRAP::ptr() };
+        usb_wrap.otg_conf().modify(|_, w| {
+            w.pad_pull_override().set_bit()
+             .dp_pulldown().clear_bit()
+             .dm_pulldown().clear_bit()
+             .dp_pullup().clear_bit()
+             .dm_pullup().clear_bit()
+        });
+
         log::info!("Hardware init: {} SRs, {} sensors", NUM_SHIFT_REGISTERS, NUM_HALL_SENSORS);
         hw
     }
@@ -137,7 +149,7 @@ impl Hardware {
 
     // ── Shift Registers (SPI) ──────────────────────────────────
 
-    pub fn sr_write(&mut self) {
+    fn sr_write(&mut self) {
         let mut buf = [0u8; NUM_SHIFT_REGISTERS];
         for i in 0..NUM_SHIFT_REGISTERS {
             buf[i] = self.sr_state[NUM_SHIFT_REGISTERS - 1 - i];
@@ -147,7 +159,7 @@ impl Hardware {
         self.latch.set_low();
     }
 
-    pub fn sr_set_bit(&mut self, bit: usize, val: bool) {
+    fn sr_set_bit(&mut self, bit: usize, val: bool) {
         if bit >= SR_CHAIN_BITS { return; }
         let reg = bit / 8;
         let pos = bit % 8;
@@ -163,13 +175,13 @@ impl Hardware {
         }
     }
 
-    pub fn sr_clear(&mut self) {
+    fn sr_clear(&mut self) {
         self.sr_state = [0u8; NUM_SHIFT_REGISTERS];
         self.bit_on_since_us = [0u64; SR_CHAIN_BITS];
         self.sr_write();
     }
 
-    pub fn sr_set_oe(&mut self, enabled: bool) {
+    fn sr_set_oe(&mut self, enabled: bool) {
         if enabled { self.oe.set_low(); } else { self.oe.set_high(); }
     }
 
