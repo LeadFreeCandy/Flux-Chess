@@ -2,6 +2,7 @@
 #include "api.h"
 #include "hardware.h"
 
+
 class Board {
 public:
   Board() {}
@@ -88,30 +89,40 @@ private:
 
   // ── Coil Grid Mapping ─────────────────────────────────────
   //
-  // 12 shift registers in a 4-column × 3-row grid.
-  // Each SR drives 5 coils in an L-shape within a 3×3 block:
+  // 12 shift registers, each with 5 coils in an L-shape:
   //
   //   (0,2)  .     .       bit 4
   //   (0,1)  .     .       bit 3
   //   (0,0) (1,0) (2,0)    bit 2, bit 1, bit 0
   //
-  // SR layout (4 cols × 3 rows, each offset by 3):
-  //   SR0  @ (0,0)   SR1  @ (3,0)   SR2  @ (6,0)   SR3  @ (9,0)
-  //   SR4  @ (0,3)   SR5  @ (3,3)   SR6  @ (6,3)   SR7  @ (9,3)
-  //   SR8  @ (0,6)   SR9  @ (3,6)   SR10 @ (6,6)   SR11 @ (9,6)
+  // SRs go bottom→top in columns, then right by 3:
+  //
+  //        col 0-2    col 3-5    col 6-8    col 9
+  //         SR2        SR5        SR8        SR11
+  // row 6   (0,6)      (3,6)      (6,6)      (9,6)
+  // row 5   (0,5)      (3,5)      (6,5)      (9,5)
+  // row 4   (0,4)      (3,4)      (6,4)      (9,4)
+  //         SR1        SR4        SR7        SR10
+  // row 3   (0,3)      (3,3)      (6,3)      (9,3)
+  // row 2   (0,2)      (3,2)      (6,2)      (9,2)
+  // row 1   (0,1)      (3,1)      (6,1)      (9,1)
+  //         SR0        SR3        SR6        SR9
+  // row 0   (0,0)      (3,0)      (6,0)      (9,0)
+  //
+  // SR chain: SR0→SR1→SR2→SR3→SR4→...→SR11
+  // sr_index = col_group * 3 + row_group (column-major, bottom to top)
 
-  static constexpr uint8_t SR_COLS = 4;
-  static constexpr uint8_t SR_ROWS = 3;
+  static constexpr uint8_t SR_COLS = 4;   // 4 column groups
+  static constexpr uint8_t SR_ROWS = 3;   // 3 row groups per column
   static constexpr uint8_t SR_BLOCK = 3;  // 3×3 block per SR
 
-  // Returns global bit index for (x, y), or -1 if no coil at that position
   static int8_t coordToBit(uint8_t x, uint8_t y) {
-    // Which SR block?
     uint8_t sr_col = x / SR_BLOCK;
     uint8_t sr_row = y / SR_BLOCK;
     if (sr_col >= SR_COLS || sr_row >= SR_ROWS) return -1;
 
-    uint8_t sr_index = sr_row * SR_COLS + sr_col;
+    // Column-major: go up first, then right
+    uint8_t sr_index = sr_col * SR_ROWS + sr_row;
 
     // Local position within the 3×3 block
     uint8_t lx = x % SR_BLOCK;

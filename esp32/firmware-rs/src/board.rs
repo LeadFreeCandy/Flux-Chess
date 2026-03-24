@@ -131,7 +131,8 @@ impl Board {
         let sr_row = y as usize / SR_BLOCK;
         if sr_col >= SR_COLS || sr_row >= SR_ROWS { return None; }
 
-        let sr_index = sr_row * SR_COLS + sr_col;
+        // Column-major: go up first, then right
+        let sr_index = sr_col * SR_ROWS + sr_row;
         let lx = x as usize % SR_BLOCK;
         let ly = y as usize % SR_BLOCK;
 
