@@ -1,62 +1,69 @@
-// Matches Rust firmware API (firmware-rs/api/src/lib.rs)
-// Types auto-generated via ts-rs in firmware-rs/frontend/src/generated/bindings/
+// AUTO-GENERATED from firmware/api.h — do not edit
+// Run: python codegen/generate.py
 
 import { transport } from "../transport";
 
-// ── Types ─────────────────────────────────────────────────────
-
-export type PulseError = "InvalidCoil" | "PulseTooLong" | "ThermalLimit";
-
-export type PulseResult =
-  | { status: "Success" }
-  | { status: "Failure"; error: PulseError };
-
-export interface BoardStateResponse {
-  raw_sensor_values: number[][];
-  ids: number[][];
-  timestamps: number[][];
-}
-
-export interface PulseCoilParams {
+export interface Position {
   x: number;
   y: number;
-  duration_us: number;
 }
 
-export interface RGBColor {
+export interface PiecePosition {
+  piece_id: number;
+  pos: Position;
+}
+
+export type ShutdownRequest = Record<string, never>;
+
+export interface PulseCoilRequest {
+  x: number;
+  y: number;
+  duration_ms: number;
+}
+
+export type GetBoardStateRequest = Record<string, never>;
+
+export interface SetRGBRequest {
   r: number;
   g: number;
   b: number;
 }
 
-export interface CommandResult {
+export type ShutdownResponse = Record<string, never>;
+
+export interface PulseCoilResponse {
+  success: boolean;
+  error: string;
+}
+
+export interface GetBoardStateResponse {
+  raw_strengths: number[][];
+  piece_count: number;
+}
+
+export interface SetRGBResponse {
   success: boolean;
 }
 
-// ── Command registry (used by HTTP transport) ─────────────────
-
 export const commands = {
-  get_board_state: { method: "GET", path: "/api/board_state" },
-  pulse_coil: { method: "POST", path: "/api/pulse_coil" },
-  set_rgb: { method: "POST", path: "/api/set_rgb" },
-  calibrate: { method: "POST", path: "/api/calibrate" },
   shutdown: { method: "POST", path: "/api/shutdown" },
+  pulse_coil: { method: "POST", path: "/api/pulse_coil" },
+  get_board_state: { method: "GET", path: "/api/board_state" },
+  set_rgb: { method: "POST", path: "/api/set_rgb" },
 } as const;
 
-// ── API functions ─────────────────────────────────────────────
-
-export function getBoardState(): Promise<BoardStateResponse> {
-  return transport.call("get_board_state", {});
+export function shutdown(): Promise<ShutdownResponse> {
+  return transport.call("shutdown", {});
 }
 
-export function pulseCoil(params: PulseCoilParams): Promise<PulseResult> {
+export function pulseCoil(params: PulseCoilRequest): Promise<PulseCoilResponse> {
   return transport.call("pulse_coil", params);
 }
 
-export function setRgb(params: RGBColor): Promise<CommandResult> {
-  return transport.call("set_rgb", params);
+export function getBoardState(): Promise<GetBoardStateResponse> {
+  return transport.call("get_board_state", {});
 }
 
-export function shutdown(): Promise<CommandResult> {
-  return transport.call("shutdown", {});
+export function setRgb(params: SetRGBRequest): Promise<SetRGBResponse> {
+  return transport.call("set_rgb", params);
 }

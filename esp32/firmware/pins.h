@@ -8,10 +8,17 @@
 // 12 daisy-chained 74HC595 shift registers (U16→U12→U22→...→U85)
 // Each SR has 4 outputs driving coil H-bridge MOSFETs
 
-#define PIN_SR_DATA   40   // U17.37 → U16.14 (SER input to first SR)
-#define PIN_SR_CLOCK  39   // U17.36 → all SR pin 11 (SRCLK)
-#define PIN_SR_LATCH  42   // U17.39 → all SR pin 12 (RCLK)
-#define PIN_SR_OE     48   // U17.29 → all SR pin 13 (active low, accent accent pulled high via R53)
+// OLD PIN CONNECTIONS
+/* #define PIN_SR_DATA   40   // U17.37 → U16.14 (SER input to first SR) */
+/* #define PIN_SR_CLOCK  39   // U17.36 → all SR pin 11 (SRCLK) */
+/* #define PIN_SR_LATCH  42   // U17.39 → all SR pin 12 (RCLK) */
+/* #define PIN_SR_OE     48   // U17.29 → all SR pin 13 (active low, accent accent pulled high via R53) */
+
+// FIXED PIN CONNECTIONS 
+#define PIN_SR_DATA   45   // U17.37 → U16.14 (SER input to first SR)
+#define PIN_SR_CLOCK  0   // U17.36 → all SR pin 11 (SRCLK)
+#define PIN_SR_LATCH  47   // U17.39 → all SR pin 12 (RCLK)
+#define PIN_SR_OE     41   // U17.29 → all SR pin 13 (active low, accent accent pulled high via R53)
 
 // ── Hall Sensor ADC Inputs ──────────────────────────────────
 // 12 Hall sensors connected via 0Ω bridge resistors to BUS lines
