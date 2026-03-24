@@ -8,7 +8,8 @@
 #define THERMAL_COOLDOWN_MS 500
 
 // SPI clock for shift registers (74HC595 max ~25MHz, use 4MHz for safety)
-#define SR_SPI_FREQ 4000000
+#define SR_SPI_FREQ 500000  // 500kHz — reduced for long PCB traces
+/* #define SR_SPI_FREQ SPI_CLK_SRC_DEFAULT */
 
 // Watchdog interval and max pulse enforcement
 #define WATCHDOG_INTERVAL_MS 100
