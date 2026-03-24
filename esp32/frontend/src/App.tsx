@@ -16,6 +16,7 @@ function App() {
     { id: "hexapawn", size: "half" },
     { id: "calibration", size: "half" },
     { id: "coils", size: "half" },
+    { id: "spaced_coils", size: "half" },
     { id: "rgb", size: "half" },
     { id: "serial", size: "full" }, // Serial defaults to full width on the bottom
   ]);
