@@ -69,8 +69,8 @@ impl Hardware {
         hw.sr_set_oe(false);
         hw.sr_clear();
 
-        // Disable USB-OTG pull resistors on GPIO 1/2 (D-/D+)
-        // Without this, ADC channels 0-1 read ~700 instead of true analog value
+        // Disable USB-OTG pull-downs on GPIO 1/2 (D-/D+)
+        // Without this, the pull-downs drag ADC channels 0-1 low
         let usb_wrap = unsafe { &*esp32s3::USB_WRAP::ptr() };
         usb_wrap.otg_conf().modify(|_, w| {
             w.pad_pull_override().set_bit()
@@ -79,6 +79,13 @@ impl Hardware {
              .dp_pullup().clear_bit()
              .dm_pullup().clear_bit()
         });
+
+        // ESP32-S3 SAR ADC data is inverted by default in RTC mode.
+        // Arduino sets data_inv to correct this. Without it, readings are
+        // 4095 - actual_value, causing saturation at low voltages.
+        let sens = unsafe { &*esp32s3::SENS::ptr() };
+        sens.sar_reader1_ctrl().modify(|_, w| w.sar_sar1_data_inv().set_bit());
+        sens.sar_reader2_ctrl().modify(|_, w| w.sar_sar2_data_inv().set_bit());
 
         log::info!("Hardware init: {} SRs, {} sensors", NUM_SHIFT_REGISTERS, NUM_HALL_SENSORS);
         hw
@@ -89,11 +96,12 @@ impl Hardware {
     pub fn read_sensor(&mut self, index: u8) -> u16 {
         let i = index as usize;
         if i >= NUM_HALL_SENSORS { return 0; }
-        if i < self.adc1_pins.len() {
+        let raw = if i < self.adc1_pins.len() {
             self.adc1_pins[i].read(&mut self.adc1)
         } else {
             self.adc2_pins[i - self.adc1_pins.len()].read(&mut self.adc2)
-        }
+        };
+        raw & 0x0FFF // mask to 12 bits
     }
 
     pub fn read_all_sensors(&mut self) -> SensorGrid<u16> {
