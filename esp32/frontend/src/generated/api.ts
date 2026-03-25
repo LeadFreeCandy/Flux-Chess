@@ -22,7 +22,13 @@ export interface PulseCoilResponse {
 export interface GetBoardStateResponse {
   raw_strengths: number[][];
   pieces: number[][];
-  graveyard: number[];
+}
+
+export type MoveError = "NONE" | "OUT_OF_BOUNDS" | "SAME_POSITION" | "NOT_ORTHOGONAL" | "NO_PIECE_AT_SOURCE" | "PATH_BLOCKED" | "COIL_FAILURE";
+
+export interface MoveResult {
+  success: boolean;
+  error: MoveError;
 }
 
 export interface SetRGBResponse {
@@ -42,7 +48,6 @@ export const commands = {
   set_rgb: { method: "POST", path: "/api/set_rgb" },
   set_piece: { method: "POST", path: "/api/set_piece" },
   move_dumb: { method: "POST", path: "/api/move_dumb" },
-  kill_piece: { method: "POST", path: "/api/kill_piece" },
 } as const;
 
 // ── API Functions ─────────────────────────────────────────────
@@ -67,10 +72,7 @@ export function setPiece(params: { x: number; y: number; id: number }): Promise<
   return transport.call("set_piece", params);
 }
 
-export function moveDumb(params: { from_x: number; from_y: number; to_x: number; to_y: number }): Promise<CommandResult> {
+export function moveDumb(params: { from_x: number; from_y: number; to_x: number; to_y: number }): Promise<MoveResult> {
   return transport.call("move_dumb", params);
 }
 
-export function killPiece(params: { x: number; y: number }): Promise<CommandResult> {
-  return transport.call("kill_piece", params);
-}

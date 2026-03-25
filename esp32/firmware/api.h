@@ -59,8 +59,6 @@ struct PulseCoilResponse {
 struct GetBoardStateResponse {
   uint16_t raw_strengths[SENSOR_COLS][SENSOR_ROWS];
   uint8_t pieces[GRID_COLS][GRID_ROWS];
-  uint8_t graveyard[16];
-  uint8_t graveyard_count;
 
   String toJson() const {
     String sensors = "[";
@@ -87,14 +85,7 @@ struct GetBoardStateResponse {
     }
     pcs += "]";
 
-    String gy = "[";
-    for (int i = 0; i < graveyard_count; i++) {
-      gy += String(graveyard[i]);
-      if (i < graveyard_count - 1) gy += ",";
-    }
-    gy += "]";
-
-    return Json().addRaw("raw_strengths", sensors).addRaw("pieces", pcs).addRaw("graveyard", gy).build();
+    return Json().addRaw("raw_strengths", sensors).addRaw("pieces", pcs).build();
   }
 };
 
