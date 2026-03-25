@@ -50,23 +50,6 @@ inline String handleMoveDumb(Board& board, const String& params) {
   return Json().add("success", ok).build();
 }
 
-inline String handleGetPieces(Board& board, const String&) {
-  String json = "[";
-  bool first = true;
-  for (uint8_t x = 0; x < GRID_COLS; x++) {
-    for (uint8_t y = 0; y < GRID_ROWS; y++) {
-      uint8_t id = board.getPiece(x, y);
-      if (id != 0) {
-        if (!first) json += ",";
-        json += Json().add("x", (int)x).add("y", (int)y).add("id", (int)id).build();
-        first = false;
-      }
-    }
-  }
-  json += "]";
-  return Json().addRaw("pieces", json).build();
-}
-
 inline String handleShutdown(Board& board, const String&) {
   return ShutdownResponse{}.toJson();
 }
@@ -79,7 +62,6 @@ public:
     on("pulse_coil", handlePulseCoil);
     on("get_board_state", handleGetBoardState);
     on("set_piece", handleSetPiece);
-    on("get_pieces", handleGetPieces);
     on("move_dumb", handleMoveDumb);
     on("set_rgb", handleSetRGB);
     on("shutdown", handleShutdown);

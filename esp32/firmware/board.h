@@ -149,7 +149,7 @@ public:
       res.raw_strengths[col][row] = raw[i];
     }
 
-    res.piece_count = 0;
+    memcpy(res.pieces, pieces_, sizeof(pieces_));
     return res;
   }
 

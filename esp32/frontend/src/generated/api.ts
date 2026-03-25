@@ -38,7 +38,7 @@ export interface PulseCoilResponse {
 
 export interface GetBoardStateResponse {
   raw_strengths: number[][];
-  piece_count: number;
+  pieces: number[][];
 }
 
 export interface SetRGBResponse {
