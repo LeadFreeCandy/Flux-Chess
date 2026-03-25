@@ -2,10 +2,99 @@
 #include "api.h"
 #include "hardware.h"
 
+// Piece IDs
+#define PIECE_NONE  0
+#define PIECE_WHITE 1
+#define PIECE_BLACK 2
+
+// Pulse duration for each step of a dumb move
+#define MOVE_PULSE_MS 250
 
 class Board {
 public:
-  Board() {}
+  Board() {
+    memset(pieces_, PIECE_NONE, sizeof(pieces_));
+  }
+
+  // ── Piece State ─────────────────────────────────────────────
+
+  uint8_t getPiece(uint8_t x, uint8_t y) const {
+    if (x >= GRID_COLS || y >= GRID_ROWS) return PIECE_NONE;
+    return pieces_[x][y];
+  }
+
+  void setPiece(uint8_t x, uint8_t y, uint8_t id) {
+    if (x >= GRID_COLS || y >= GRID_ROWS) return;
+    pieces_[x][y] = id;
+    LOG_BOARD("setPiece: (%d,%d) = %d", x, y, id);
+  }
+
+  // ── Dumb Orthogonal Move ────────────────────────────────────
+  // Moves a piece along a major axis (both coords must be %3==0,
+  // and either x's or y's must match). Pulses each coil along
+  // the path for MOVE_PULSE_MS each.
+
+  bool moveDumbOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
+    // Validate on major grid
+    if (fromX % 3 != 0 || fromY % 3 != 0 || toX % 3 != 0 || toY % 3 != 0) {
+      LOG_BOARD("moveDumb REJECT: not on major grid (%d,%d)->(%d,%d)", fromX, fromY, toX, toY);
+      return false;
+    }
+
+    // Must be orthogonal
+    if (fromX != toX && fromY != toY) {
+      LOG_BOARD("moveDumb REJECT: not orthogonal (%d,%d)->(%d,%d)", fromX, fromY, toX, toY);
+      return false;
+    }
+
+    // Must have a piece at source
+    uint8_t piece = getPiece(fromX, fromY);
+    if (piece == PIECE_NONE) {
+      LOG_BOARD("moveDumb REJECT: no piece at (%d,%d)", fromX, fromY);
+      return false;
+    }
+
+    // Can't move to occupied square
+    if (getPiece(toX, toY) != PIECE_NONE) {
+      LOG_BOARD("moveDumb REJECT: destination (%d,%d) occupied", toX, toY);
+      return false;
+    }
+
+    LOG_BOARD("moveDumb: moving piece %d from (%d,%d) to (%d,%d)", piece, fromX, fromY, toX, toY);
+
+    // Build path — step by 3 along the axis
+    int8_t dx = 0, dy = 0;
+    if (toX > fromX) dx = 3;
+    else if (toX < fromX) dx = -3;
+    if (toY > fromY) dy = 3;
+    else if (toY < fromY) dy = -3;
+
+    int8_t cx = fromX, cy = fromY;
+
+    // Pulse each coil along the path (skip the source, include destination)
+    while (cx != toX || cy != toY) {
+      cx += dx;
+      cy += dy;
+
+      int8_t bit = coordToBit(cx, cy);
+      if (bit < 0) {
+        LOG_BOARD("moveDumb ABORT: no coil at (%d,%d) along path", cx, cy);
+        return false;
+      }
+
+      LOG_BOARD("moveDumb: pulsing (%d,%d) for %dms", cx, cy, MOVE_PULSE_MS);
+      if (!hw_.pulseBit((uint8_t)bit, MOVE_PULSE_MS)) {
+        LOG_BOARD("moveDumb ABORT: pulse failed at (%d,%d)", cx, cy);
+        return false;
+      }
+    }
+
+    // Update piece state
+    pieces_[fromX][fromY] = PIECE_NONE;
+    pieces_[toX][toY] = piece;
+    LOG_BOARD("moveDumb OK: piece %d now at (%d,%d)", piece, toX, toY);
+    return true;
+  }
 
   // ── Coil Control ──────────────────────────────────────────
 
@@ -52,7 +141,6 @@ public:
   GetBoardStateResponse getBoardState() {
     GetBoardStateResponse res = {};
 
-    // 12 hall sensors map to a 4×3 grid
     uint16_t raw[NUM_HALL_SENSORS];
     hw_.readAllSensors(raw, NUM_HALL_SENSORS);
     for (int i = 0; i < NUM_HALL_SENSORS; i++) {
@@ -86,6 +174,7 @@ public:
 
 private:
   Hardware hw_;
+  uint8_t pieces_[GRID_COLS][GRID_ROWS];  // 10×7 piece ID grid
 
   // ── Coil Grid Mapping ─────────────────────────────────────
   //
@@ -100,44 +189,34 @@ private:
   //        col 0-2    col 3-5    col 6-8    col 9
   //         SR2        SR5        SR8        SR11
   // row 6   (0,6)      (3,6)      (6,6)      (9,6)
-  // row 5   (0,5)      (3,5)      (6,5)      (9,5)
-  // row 4   (0,4)      (3,4)      (6,4)      (9,4)
   //         SR1        SR4        SR7        SR10
   // row 3   (0,3)      (3,3)      (6,3)      (9,3)
-  // row 2   (0,2)      (3,2)      (6,2)      (9,2)
-  // row 1   (0,1)      (3,1)      (6,1)      (9,1)
   //         SR0        SR3        SR6        SR9
   // row 0   (0,0)      (3,0)      (6,0)      (9,0)
   //
-  // SR chain: SR0→SR1→SR2→SR3→SR4→...→SR11
   // sr_index = col_group * 3 + row_group (column-major, bottom to top)
 
-  static constexpr uint8_t SR_COLS = 4;   // 4 column groups
-  static constexpr uint8_t SR_ROWS = 3;   // 3 row groups per column
-  static constexpr uint8_t SR_BLOCK = 3;  // 3×3 block per SR
+  static constexpr uint8_t SR_COLS = 4;
+  static constexpr uint8_t SR_ROWS = 3;
+  static constexpr uint8_t SR_BLOCK = 3;
 
   static int8_t coordToBit(uint8_t x, uint8_t y) {
     uint8_t sr_col = x / SR_BLOCK;
     uint8_t sr_row = y / SR_BLOCK;
     if (sr_col >= SR_COLS || sr_row >= SR_ROWS) return -1;
 
-    // Column-major: go up first, then right
     uint8_t sr_index = sr_col * SR_ROWS + sr_row;
 
-    // Local position within the 3×3 block
     uint8_t lx = x % SR_BLOCK;
     uint8_t ly = y % SR_BLOCK;
 
     int8_t local_bit = -1;
 
     if (ly == 0) {
-      // Bottom row: bit 2 at lx=0, bit 1 at lx=1, bit 0 at lx=2
       local_bit = 2 - lx;
     } else if (lx == 0) {
-      // Left column going up: bit 3 at ly=1, bit 4 at ly=2
       local_bit = 2 + ly;
     }
-    // else: no coil at this position (lx>0 && ly>0)
 
     if (local_bit < 0) return -1;
 

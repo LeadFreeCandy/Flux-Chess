@@ -33,6 +33,40 @@ inline String handleSetRGB(Board& board, const String& params) {
   ).toJson();
 }
 
+inline String handleSetPiece(Board& board, const String& params) {
+  uint8_t x = jsonGet(params, "x").toInt();
+  uint8_t y = jsonGet(params, "y").toInt();
+  uint8_t id = jsonGet(params, "id").toInt();
+  board.setPiece(x, y, id);
+  return Json().add("success", true).build();
+}
+
+inline String handleMoveDumb(Board& board, const String& params) {
+  uint8_t fromX = jsonGet(params, "from_x").toInt();
+  uint8_t fromY = jsonGet(params, "from_y").toInt();
+  uint8_t toX = jsonGet(params, "to_x").toInt();
+  uint8_t toY = jsonGet(params, "to_y").toInt();
+  bool ok = board.moveDumbOrthogonal(fromX, fromY, toX, toY);
+  return Json().add("success", ok).build();
+}
+
+inline String handleGetPieces(Board& board, const String&) {
+  String json = "[";
+  bool first = true;
+  for (uint8_t x = 0; x < GRID_COLS; x++) {
+    for (uint8_t y = 0; y < GRID_ROWS; y++) {
+      uint8_t id = board.getPiece(x, y);
+      if (id != 0) {
+        if (!first) json += ",";
+        json += Json().add("x", (int)x).add("y", (int)y).add("id", (int)id).build();
+        first = false;
+      }
+    }
+  }
+  json += "]";
+  return Json().addRaw("pieces", json).build();
+}
+
 inline String handleShutdown(Board& board, const String&) {
   return ShutdownResponse{}.toJson();
 }
@@ -44,6 +78,9 @@ public:
   SerialServer(Board& board) : board_(board), num_commands_(0) {
     on("pulse_coil", handlePulseCoil);
     on("get_board_state", handleGetBoardState);
+    on("set_piece", handleSetPiece);
+    on("get_pieces", handleGetPieces);
+    on("move_dumb", handleMoveDumb);
     on("set_rgb", handleSetRGB);
     on("shutdown", handleShutdown);
   }
