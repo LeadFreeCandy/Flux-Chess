@@ -13,6 +13,8 @@ constexpr uint16_t MAX_PULSE_MS = 1000;
 
 FLUX_ENUM(PulseError, NONE, INVALID_COIL, PULSE_TOO_LONG, THERMAL_LIMIT)
 
+FLUX_ENUM(MoveError, NONE, OUT_OF_BOUNDS, NOT_ON_MAJOR_GRID, NO_PIECE_AT_SOURCE, DESTINATION_OCCUPIED, NOT_ORTHOGONAL, COIL_FAILURE, SAME_POSITION)
+
 // ── Shared Types ──────────────────────────────────────────────
 
 struct Position {

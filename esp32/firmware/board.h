@@ -7,13 +7,15 @@
 #define PIECE_WHITE 1
 #define PIECE_BLACK 2
 
-// Pulse duration for each step of a dumb move
-#define MOVE_PULSE_MS 250
+// Move parameters
+#define MOVE_PULSE_MS       250   // ms per coil pulse during move
+#define MOVE_DELAY_MS       10    // ms delay between sequential pulses
+#define MOVE_PULSE_REPEATS  1     // times to repeat each pulse
 
 class Board {
 public:
   Board() {
-    memset(pieces_, PIECE_NONE, sizeof(pieces_));
+    initDefaultBoard();
   }
 
   // ── Piece State ─────────────────────────────────────────────
@@ -29,71 +31,50 @@ public:
     LOG_BOARD("setPiece: (%d,%d) = %d", x, y, id);
   }
 
-  // ── Dumb Orthogonal Move ────────────────────────────────────
-  // Moves a piece along a major axis (both coords must be %3==0,
-  // and either x's or y's must match). Pulses each coil along
-  // the path for MOVE_PULSE_MS each.
+  // ── Move (public API) ──────────────────────────────────────
+  // Path-plans an L-shaped or straight move between any two
+  // major grid positions. Breaks into orthogonal segments.
 
-  bool moveDumbOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
-    // Validate on major grid
+  MoveError moveDumb(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
+    LOG_BOARD("moveDumb: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
+
+    // Validate both positions on major grid
+    if (fromX >= GRID_COLS || fromY >= GRID_ROWS || toX >= GRID_COLS || toY >= GRID_ROWS) {
+      LOG_BOARD("moveDumb REJECT: out of bounds");
+      return MoveError::OUT_OF_BOUNDS;
+    }
     if (fromX % 3 != 0 || fromY % 3 != 0 || toX % 3 != 0 || toY % 3 != 0) {
-      LOG_BOARD("moveDumb REJECT: not on major grid (%d,%d)->(%d,%d)", fromX, fromY, toX, toY);
-      return false;
+      LOG_BOARD("moveDumb REJECT: not on major grid");
+      return MoveError::NOT_ON_MAJOR_GRID;
     }
-
-    // Must be orthogonal
-    if (fromX != toX && fromY != toY) {
-      LOG_BOARD("moveDumb REJECT: not orthogonal (%d,%d)->(%d,%d)", fromX, fromY, toX, toY);
-      return false;
+    if (fromX == toX && fromY == toY) {
+      LOG_BOARD("moveDumb REJECT: same position");
+      return MoveError::SAME_POSITION;
     }
-
-    // Must have a piece at source
-    uint8_t piece = getPiece(fromX, fromY);
-    if (piece == PIECE_NONE) {
-      LOG_BOARD("moveDumb REJECT: no piece at (%d,%d)", fromX, fromY);
-      return false;
+    if (getPiece(fromX, fromY) == PIECE_NONE) {
+      LOG_BOARD("moveDumb REJECT: no piece at source");
+      return MoveError::NO_PIECE_AT_SOURCE;
     }
-
-    // Can't move to occupied square
     if (getPiece(toX, toY) != PIECE_NONE) {
-      LOG_BOARD("moveDumb REJECT: destination (%d,%d) occupied", toX, toY);
-      return false;
+      LOG_BOARD("moveDumb REJECT: destination occupied");
+      return MoveError::DESTINATION_OCCUPIED;
     }
 
-    LOG_BOARD("moveDumb: moving piece %d from (%d,%d) to (%d,%d)", piece, fromX, fromY, toX, toY);
+    // Path planning: move X first, then Y (simple L-path)
+    MoveError err;
 
-    // Build path — step by 3 along the axis
-    int8_t dx = 0, dy = 0;
-    if (toX > fromX) dx = 3;
-    else if (toX < fromX) dx = -3;
-    if (toY > fromY) dy = 3;
-    else if (toY < fromY) dy = -3;
-
-    int8_t cx = fromX, cy = fromY;
-
-    // Pulse each coil along the path (skip the source, include destination)
-    while (cx != toX || cy != toY) {
-      cx += dx;
-      cy += dy;
-
-      int8_t bit = coordToBit(cx, cy);
-      if (bit < 0) {
-        LOG_BOARD("moveDumb ABORT: no coil at (%d,%d) along path", cx, cy);
-        return false;
-      }
-
-      LOG_BOARD("moveDumb: pulsing (%d,%d) for %dms", cx, cy, MOVE_PULSE_MS);
-      if (!hw_.pulseBit((uint8_t)bit, MOVE_PULSE_MS)) {
-        LOG_BOARD("moveDumb ABORT: pulse failed at (%d,%d)", cx, cy);
-        return false;
-      }
+    if (fromX != toX) {
+      err = moveDumbOrthogonal(fromX, fromY, toX, fromY);
+      if (err != MoveError::NONE) return err;
     }
 
-    // Update piece state
-    pieces_[fromX][fromY] = PIECE_NONE;
-    pieces_[toX][toY] = piece;
-    LOG_BOARD("moveDumb OK: piece %d now at (%d,%d)", piece, toX, toY);
-    return true;
+    if (fromY != toY) {
+      err = moveDumbOrthogonal(toX, fromY, toX, toY);
+      if (err != MoveError::NONE) return err;
+    }
+
+    LOG_BOARD("moveDumb OK: piece now at (%d,%d)", toX, toY);
+    return MoveError::NONE;
   }
 
   // ── Coil Control ──────────────────────────────────────────
@@ -104,34 +85,25 @@ public:
     LOG_BOARD("pulseCoil: request at grid (%d,%d) for %dms", x, y, duration_ms);
 
     if (x >= GRID_COLS || y >= GRID_ROWS) {
-      LOG_BOARD("pulseCoil REJECT: (%d,%d) out of bounds (grid is %dx%d)", x, y, GRID_COLS, GRID_ROWS);
       res.error = PulseError::INVALID_COIL;
       return res;
     }
-
     if (duration_ms > MAX_PULSE_MS) {
-      LOG_BOARD("pulseCoil REJECT: %dms exceeds max %dms", duration_ms, MAX_PULSE_MS);
       res.error = PulseError::PULSE_TOO_LONG;
       return res;
     }
 
     int8_t bit = coordToBit(x, y);
     if (bit < 0) {
-      uint8_t lx = x % SR_BLOCK, ly = y % SR_BLOCK;
-      LOG_BOARD("pulseCoil REJECT: (%d,%d) has no coil (local %d,%d in SR block %d,%d)", x, y, lx, ly, x / SR_BLOCK, y / SR_BLOCK);
       res.error = PulseError::INVALID_COIL;
       return res;
     }
 
-    uint8_t sr = bit / 8, pin = bit % 8;
-    LOG_BOARD("pulseCoil: (%d,%d) -> SR%d pin %d (global bit %d), delegating to hw", x, y, sr, pin, bit);
     if (!hw_.pulseBit((uint8_t)bit, duration_ms)) {
-      LOG_BOARD("pulseCoil FAIL: hw refused pulse on SR%d pin %d (thermal limit)", sr, pin);
       res.error = PulseError::THERMAL_LIMIT;
       return res;
     }
 
-    LOG_BOARD("pulseCoil OK: (%d,%d) pulsed for %dms via SR%d pin %d", x, y, duration_ms, sr, pin);
     res.success = true;
     return res;
   }
@@ -156,36 +128,104 @@ public:
   // ── RGB ───────────────────────────────────────────────────
 
   SetRGBResponse setRGB(uint8_t r, uint8_t g, uint8_t b) {
-    LOG_BOARD("setRGB: r=%d g=%d b=%d (hex #%02X%02X%02X)", r, g, b, r, g, b);
     hw_.setRGB(r, g, b);
     return { true };
   }
 
-  // ── Buttons & Power ───────────────────────────────────────
-
-  uint16_t readButton1() { return hw_.readButton1(); }
-  uint16_t readButton2() { return hw_.readButton2(); }
-  bool readDC1() { return hw_.readDC1(); }
-  bool readDC2() { return hw_.readDC2(); }
-
   // ── System ────────────────────────────────────────────────
 
-  void shutdown() { LOG_BOARD("shutdown: delegating to hardware for safe powerdown"); hw_.shutdown(); }
+  void shutdown() { hw_.shutdown(); }
 
 private:
   Hardware hw_;
-  uint8_t pieces_[GRID_COLS][GRID_ROWS];  // 10×7 piece ID grid
+  uint8_t pieces_[GRID_COLS][GRID_ROWS];
+
+  // ── Default Board Setup ─────────────────────────────────────
+  // Places pieces on the standard chess starting positions
+  // mapped to the major grid (every 3rd position).
+  // Major grid positions: x = 0,3,6,9  y = 0,3,6
+  // That gives us a 4x3 grid of major squares.
+  //
+  //   y=6:  B B B B    (black back row — but only 4 columns)
+  //   y=3:  . . . .    (empty middle)
+  //   y=0:  W W W W    (white back row)
+
+  void initDefaultBoard() {
+    memset(pieces_, PIECE_NONE, sizeof(pieces_));
+
+    // White pieces on bottom row (y=0)
+    for (uint8_t x = 0; x < GRID_COLS; x += 3) {
+      pieces_[x][0] = PIECE_WHITE;
+    }
+    // Black pieces on top row (y=6)
+    for (uint8_t x = 0; x < GRID_COLS; x += 3) {
+      pieces_[x][6] = PIECE_BLACK;
+    }
+
+    LOG_BOARD("initDefaultBoard: 4 white at y=0, 4 black at y=6");
+  }
+
+  // ── Orthogonal Move (internal) ──────────────────────────────
+  // Moves a piece in a straight line along one axis.
+  // Updates piece state. Called by moveDumb for each leg.
+
+  MoveError moveDumbOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
+    // Must be orthogonal
+    if (fromX != toX && fromY != toY) {
+      return MoveError::NOT_ORTHOGONAL;
+    }
+    if (fromX == toX && fromY == toY) {
+      return MoveError::NONE;  // no-op
+    }
+
+    uint8_t piece = getPiece(fromX, fromY);
+
+    // Step direction
+    int8_t dx = 0, dy = 0;
+    if (toX > fromX) dx = 3;
+    else if (toX < fromX) dx = -3;
+    if (toY > fromY) dy = 3;
+    else if (toY < fromY) dy = -3;
+
+    int8_t cx = fromX, cy = fromY;
+
+    LOG_BOARD("moveOrthogonal: (%d,%d)->(%d,%d) step=(%d,%d)", fromX, fromY, toX, toY, dx, dy);
+
+    while (cx != toX || cy != toY) {
+      cx += dx;
+      cy += dy;
+
+      int8_t bit = coordToBit(cx, cy);
+      if (bit < 0) {
+        LOG_BOARD("moveOrthogonal ABORT: no coil at (%d,%d)", cx, cy);
+        return MoveError::COIL_FAILURE;
+      }
+
+      // Pulse with repeats
+      for (int r = 0; r < MOVE_PULSE_REPEATS; r++) {
+        LOG_BOARD("moveOrthogonal: pulse (%d,%d) rep %d/%d for %dms", cx, cy, r + 1, MOVE_PULSE_REPEATS, MOVE_PULSE_MS);
+        if (!hw_.pulseBit((uint8_t)bit, MOVE_PULSE_MS)) {
+          LOG_BOARD("moveOrthogonal ABORT: pulse failed at (%d,%d)", cx, cy);
+          return MoveError::COIL_FAILURE;
+        }
+        if (r < MOVE_PULSE_REPEATS - 1) {
+          delay(MOVE_DELAY_MS);
+        }
+      }
+
+      // Delay between steps
+      delay(MOVE_DELAY_MS);
+    }
+
+    // Update piece state
+    pieces_[fromX][fromY] = PIECE_NONE;
+    pieces_[toX][toY] = piece;
+    return MoveError::NONE;
+  }
 
   // ── Coil Grid Mapping ─────────────────────────────────────
   //
-  // 12 shift registers, each with 5 coils in an L-shape:
-  //
-  //   (0,2)  .     .       bit 4
-  //   (0,1)  .     .       bit 3
-  //   (0,0) (1,0) (2,0)    bit 2, bit 1, bit 0
-  //
   // SRs go bottom→top in columns, then right by 3:
-  //
   //        col 0-2    col 3-5    col 6-8    col 9
   //         SR2        SR5        SR8        SR11
   // row 6   (0,6)      (3,6)      (6,6)      (9,6)
@@ -194,7 +234,7 @@ private:
   //         SR0        SR3        SR6        SR9
   // row 0   (0,0)      (3,0)      (6,0)      (9,0)
   //
-  // sr_index = col_group * 3 + row_group (column-major, bottom to top)
+  // sr_index = col_group * 3 + row_group
 
   static constexpr uint8_t SR_COLS = 4;
   static constexpr uint8_t SR_ROWS = 3;
@@ -211,13 +251,11 @@ private:
     uint8_t ly = y % SR_BLOCK;
 
     int8_t local_bit = -1;
-
     if (ly == 0) {
       local_bit = 2 - lx;
     } else if (lx == 0) {
       local_bit = 2 + ly;
     }
-
     if (local_bit < 0) return -1;
 
     return (int8_t)(sr_index * 8 + local_bit);

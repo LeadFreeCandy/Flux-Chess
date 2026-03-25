@@ -46,8 +46,11 @@ inline String handleMoveDumb(Board& board, const String& params) {
   uint8_t fromY = jsonGet(params, "from_y").toInt();
   uint8_t toX = jsonGet(params, "to_x").toInt();
   uint8_t toY = jsonGet(params, "to_y").toInt();
-  bool ok = board.moveDumbOrthogonal(fromX, fromY, toX, toY);
-  return Json().add("success", ok).build();
+  MoveError err = board.moveDumb(fromX, fromY, toX, toY);
+  return Json()
+    .add("success", err == MoveError::NONE)
+    .add("error", toJson(err))
+    .build();
 }
 
 inline String handleShutdown(Board& board, const String&) {
