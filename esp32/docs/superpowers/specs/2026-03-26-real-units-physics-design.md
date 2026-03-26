@@ -38,11 +38,12 @@ struct PhysicsParams {
   float mu_kinetic         = 0.25f;    // kinetic friction coefficient
   float target_velocity_mm_s = 100.0f; // cruise speed (mm/s)
   float target_accel_mm_s2   = 500.0f; // max acceleration (mm/s²)
+  bool active_brake          = true;    // use reverse coil braking
   uint16_t max_duration_ms   = 5000;   // timeout
 };
 ```
 
-7 parameters, all in real units. No force model constants — the force table provides everything.
+8 parameters, all in real units. No force model constants — the force table provides everything.
 
 ## Force Computation
 
@@ -136,9 +137,41 @@ struct PieceState {
 };
 ```
 
+## Stopping Strategy
+
+Each tick, the controller checks whether it's time to stop:
+
+```
+// Friction-only deceleration (coil off, just gravity for normal force)
+friction_decel = mu_kinetic * piece_mass_g * 9.81f / (piece_mass_g * 1e-3f)  // mm/s²
+
+if (active_brake):
+  // Lookup brake force from previous coil pulling backwards
+  brake_force = table_lookup(prev_coil, piece_pos)  // mN at max_current
+  brake_decel = friction_decel + brake_force / (piece_mass_g * 1e-3f)
+  brake_decel = min(brake_decel, target_accel_mm_s2)  // cap to max accel
+else:
+  brake_decel = friction_decel
+
+stopping_dist = v² / (2 * brake_decel)
+
+if (stopping_dist >= dist_remaining):
+  // Time to stop
+  stop current coil
+  if (active_brake):
+    activate previous coil at duty proportional to desired decel
+  // Simulation continues with no forward coil, friction/brake decelerates
+```
+
+**Passive stop**: Cut the coil, friction coasts piece to rest. Simple, slightly less precise.
+
+**Active brake** (default): Cut forward coil, briefly activate previous coil to pull backwards. Capped by `target_accel_mm_s2` to prevent slamming. Allows higher cruise speed since braking distance is shorter.
+
+After the coil is cut, the simulation continues ticking — friction (and optional brake) decelerates the piece. Arrival is detected when the piece is close and slow enough.
+
 ## Arrival Check
 
-Position-based: `distance_to_destination < 1.0mm && speed < 5.0mm/s`. These thresholds are in mm now (~0.08 grid units and ~0.4 grid units/s equivalent).
+Position-based: `distance_to_destination < 1.0mm && speed < 5.0mm/s`. These thresholds are in mm now.
 
 ## Static Friction Check
 
