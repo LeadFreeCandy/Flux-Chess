@@ -137,8 +137,8 @@ export function movePhysics(params: MovePhysicsRequest): Promise<MoveResponse> {
   return transport.call("move_physics", params);
 }
 
-export function tunePhysics(params: MovePhysicsRequest): Promise<GetCalibrationResponse> {
-  return transport.call("tune_physics", params);
+export function tunePhysics(): Promise<GetCalibrationResponse> {
+  return transport.call("tune_physics", {});
 }
 
 export function calibrate(): Promise<CalibrateResponse> {

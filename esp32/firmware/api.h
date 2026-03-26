@@ -164,6 +164,6 @@ struct MovePhysicsRequest {
 // API_COMMAND(set_piece, POST, /api/set_piece, SetPieceRequest, SetRGBResponse)
 // API_COMMAND(move_dumb, POST, /api/move_dumb, MoveDumbRequest, MoveResponse)
 // API_COMMAND(move_physics, POST, /api/move_physics, MovePhysicsRequest, MoveResponse)
-// API_COMMAND(tune_physics, POST, /api/tune_physics, MovePhysicsRequest, GetCalibrationResponse)
+// API_COMMAND(tune_physics, POST, /api/tune_physics, CalibrateRequest, GetCalibrationResponse)
 // API_COMMAND(calibrate, POST, /api/calibrate, CalibrateRequest, CalibrateResponse)
 // API_COMMAND(get_calibration, GET, /api/calibration, GetCalibrationRequest, GetCalibrationResponse)

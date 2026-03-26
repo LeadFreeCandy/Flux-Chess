@@ -88,8 +88,7 @@ inline PhysicsParams parsePhysicsParams(const String& params) {
 }
 
 inline String handleTunePhysics(Board& board, const String& params) {
-  PhysicsParams p = parsePhysicsParams(params);
-  return board.tunePhysics(p);
+  return board.tunePhysics();
 }
 
 inline String handleGetCalibration(Board& board, const String&) {
