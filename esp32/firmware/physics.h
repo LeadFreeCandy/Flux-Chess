@@ -4,9 +4,11 @@
 #include "hardware.h"
 #include "utils.h"
 #include "api.h"
+#include "force_tables.h"
 
 // Firmware constant — not tunable from frontend
-static constexpr float SENSOR_VELOCITY_WEIGHT = 0.3f;
+// Sensor correction will be added back after pure physics sim is tuned
+// static constexpr float SENSOR_VELOCITY_WEIGHT = 0.3f;
 
 struct PieceState {
   float x, y;     // estimated position in grid coords
@@ -36,33 +38,16 @@ struct PhysicsParams {
   float target_velocity  = 5.0f;   // grid-units/sec
   float target_accel     = 20.0f;  // grid-units/sec^2
 
-  // Sensor distance model (same shape as force, inverted)
-  float sensor_k         = 500.0f;
-  float sensor_falloff   = 2.0f;
-  float sensor_threshold = 50.0f;  // min (baseline - reading) to activate
-
-  // Manual sensor calibration (used when no calibration data available)
-  float manual_baseline   = 2030.0f;  // typical ADC reading with no piece
-  float manual_piece_mean = 1700.0f;  // typical ADC reading with piece centered
-
   // Safety
   uint16_t max_duration_ms = 5000;
 };
 
-// Calibration data bridge — Board copies relevant fields here
-struct CalSensorData {
-  float baseline_mean;
-  float piece_mean;
-};
 
 class PhysicsMove {
 public:
   PhysicsMove(Hardware& hw) : hw_(hw) {}
 
-  void setCalData(const CalSensorData* sensors, int count) {
-    cal_sensors_ = sensors;
-    cal_count_ = count;
-  }
+  // Sensor correction disabled — pure physics sim for now
 
   MoveError execute(PieceState& piece, const uint8_t path[][2], int path_len,
                     const PhysicsParams& params) {
@@ -87,15 +72,12 @@ public:
     unsigned long t0 = millis();
     unsigned long last_tick_us = micros();
 
-    float prev_sensor_pos = 0;
-    bool prev_sensor_valid = false;
     uint8_t last_duty = duty;
 
     // Stats tracking
     float max_speed = 0;
     float max_force = 0;
     int coil_switches = 0;
-    int sensor_corrections = 0;
     bool braked = false;
 
     LOG_BOARD("physics: start path_len=%d from=(%.1f,%.1f) to=(%d,%d)",
@@ -194,9 +176,9 @@ public:
       piece.x += piece.vx * dt;
       piece.y += piece.vy * dt;
 
-      // Debug: log every 10ms
+      // Debug: log every 100ms
       unsigned long elapsed = millis() - t0;
-      if (elapsed / 10 != (elapsed - 1) / 10) {
+      if (elapsed / 100 != (elapsed - 1) / 100) {
         LOG_BOARD("physics: t=%lums pos=(%.2f,%.2f) v=(%.2f,%.2f) d=%.2f duty=%d",
                   elapsed, piece.x, piece.y, piece.vx, piece.vy, dist, duty);
       }
@@ -218,7 +200,6 @@ public:
           activeBit = newBit;
           hw_.startCoil((uint8_t)activeBit, 255);
           last_duty = 255;
-          prev_sensor_valid = false;
 
           coil_switches++;
           LOG_BOARD("physics: switch to coil %d at (%d,%d) idx=%d/%d",
@@ -232,117 +213,32 @@ public:
         last_duty = duty;
       }
 
-      // 11. Sensor correction — for whichever sensor block the active coil is in
-      if (cal_sensors_) {
-        uint8_t si = sensorAt((uint8_t)cx, (uint8_t)cy);
-        if (si < cal_count_) {
-          uint16_t reading = hw_.readSensor(si);
-          float baseline = cal_sensors_[si].baseline_mean;
-          float strength = baseline - reading;
+      // 11. Arrival check — estimated position reached last coil
+      if (coil_idx == path_len - 1) {
+        float dest_x = path[path_len-1][0];
+        float dest_y = path[path_len-1][1];
+        float d_dest = sqrtf((piece.x - dest_x) * (piece.x - dest_x) + (piece.y - dest_y) * (piece.y - dest_y));
 
-          if (strength > params.sensor_threshold) {
-            float sensor_dist = sensorDistance(strength, params);
-            float scx = ((int)(cx / SR_BLOCK)) * SR_BLOCK;
-            float scy = ((int)(cy / SR_BLOCK)) * SR_BLOCK;
-            float dest_x = path[path_len-1][0];
-            float dest_y = path[path_len-1][1];
+        if (d_dest < 0.1f && speed < 0.5f) {
+          piece.x = dest_x;
+          piece.y = dest_y;
+          piece.vx = 0;
+          piece.vy = 0;
+          piece.stuck = true;
 
-            // Save sim state before correction
-            float sim_pos = moveX ? piece.x : piece.y;
-            float sim_vel = moveX ? piece.vx : piece.vy;
-
-            // Correct position: sensor says piece is sensor_dist from center.
-            // Only apply if it moves piece closer to center (sensor is more accurate near center).
-            float sensor_pos;
-            bool corrected_applied = false;
-            if (moveX) {
-              float sim_dist = fabsf(piece.x - scx);
-              if (sensor_dist < sim_dist) {
-                float dir = (piece.x >= scx) ? 1.0f : -1.0f;
-                piece.x = scx + dir * sensor_dist;
-                corrected_applied = true;
-              }
-              sensor_pos = piece.x;
-            } else {
-              float sim_dist = fabsf(piece.y - scy);
-              if (sensor_dist < sim_dist) {
-                float dir = (piece.y >= scy) ? 1.0f : -1.0f;
-                piece.y = scy + dir * sensor_dist;
-                corrected_applied = true;
-              }
-              sensor_pos = piece.y;
-            }
-
-            float pos_error = sensor_pos - sim_pos;
-
-            float v_sensor = 0;
-            if (prev_sensor_valid && dt > 0) {
-              v_sensor = (sensor_pos - prev_sensor_pos) / dt;
-              if (moveX) {
-                piece.vx = piece.vx * (1.0f - SENSOR_VELOCITY_WEIGHT)
-                         + v_sensor * SENSOR_VELOCITY_WEIGHT;
-              } else {
-                piece.vy = piece.vy * (1.0f - SENSOR_VELOCITY_WEIGHT)
-                         + v_sensor * SENSOR_VELOCITY_WEIGHT;
-              }
-            }
-            prev_sensor_pos = sensor_pos;
-            prev_sensor_valid = true;
-            if (corrected_applied) sensor_corrections++;
-
-            // Log sensor correction on first hit or when error is significant
-            if (sensor_corrections == 1 || fabsf(pos_error) > 0.1f || (sensor_corrections % 50 == 0)) {
-              LOG_BOARD("physics: sensor s%d t=%lums adc=%d pos: sim=%.2f->cor=%.2f (err=%.2f) vel: sim=%.2f sensor=%.2f",
-                        si, millis() - t0, reading, sim_pos, sensor_pos, pos_error, sim_vel, v_sensor);
-            }
-          }
-        }
-      }
-
-      // 12. Arrival check — on last coil, sensor shows piece centered
-      if (coil_idx == path_len - 1 && cal_sensors_) {
-        uint8_t si = sensorAt(path[path_len-1][0], path[path_len-1][1]);
-        if (si < cal_count_) {
-          uint16_t reading = hw_.readSensor(si);
-          float piece_mean = cal_sensors_[si].piece_mean;
-          if (fabsf(reading - piece_mean) < params.sensor_threshold) {
-            LOG_BOARD("physics: arrived at (%d,%d) reading=%d piece_mean=%.0f",
-                      path[path_len-1][0], path[path_len-1][1], reading, piece_mean);
-
-            if (coil_idx > 0) {
-              float v_along = moveX ? piece.vx : piece.vy;
-              float move_dir = moveX ? dx : dy;
-              if (v_along * move_dir > 0.1f) {
-                int8_t prevBit = coordToBit(path[coil_idx-1][0], path[coil_idx-1][1]);
-                if (prevBit >= 0) {
-                  hw_.pulseBit((uint8_t)prevBit, 30, 180);
-                  braked = true;
-                  LOG_BOARD("physics: brake applied");
-                }
-              }
-            }
-
-            piece.x = path[path_len-1][0];
-            piece.y = path[path_len-1][1];
-            piece.vx = 0;
-            piece.vy = 0;
-            piece.stuck = true;
-
-            hw_.stopCoil((uint8_t)activeBit);
-            unsigned long total_ms = millis() - t0;
-            float dist_total = sqrtf(dx*dx + dy*dy);
-            float avg_speed = (total_ms > 0) ? dist_total / (total_ms / 1000.0f) : 0;
-            LOG_BOARD("physics: === MOVE COMPLETE ===");
-            LOG_BOARD("physics: time=%lums dist=%.1fgu avg_speed=%.1fgu/s max_speed=%.1fgu/s", total_ms, dist_total, avg_speed, max_speed);
-            LOG_BOARD("physics: coil_switches=%d sensor_corrections=%d braked=%d", coil_switches, sensor_corrections, braked ? 1 : 0);
-            if (max_speed > params.target_velocity * 0.95f) LOG_BOARD("physics: hint: hit velocity cap, increase target_velocity for faster moves");
-            if (max_speed < params.target_velocity * 0.5f) LOG_BOARD("physics: hint: never reached half max speed, increase force_k or reduce friction_kinetic");
-            if (total_ms > 2000) LOG_BOARD("physics: hint: slow move, increase force_k or target_accel");
-            if (braked) LOG_BOARD("physics: hint: braking needed, increase friction_kinetic to slow naturally");
-            if (sensor_corrections == 0) LOG_BOARD("physics: hint: no sensor corrections, check sensor_threshold or calibration");
-            if (avg_speed < 1.0f) LOG_BOARD("physics: hint: very slow avg speed, friction may be too high relative to force");
-            return MoveError::NONE;
-          }
+          hw_.stopCoil((uint8_t)activeBit);
+          unsigned long total_ms = millis() - t0;
+          float dist_total = sqrtf(dx*dx + dy*dy);
+          float avg_speed = (total_ms > 0) ? dist_total / (total_ms / 1000.0f) : 0;
+          LOG_BOARD("physics: === MOVE COMPLETE ===");
+          LOG_BOARD("physics: time=%lums dist=%.1fgu avg_speed=%.1fgu/s max_speed=%.1fgu/s", total_ms, dist_total, avg_speed, max_speed);
+          LOG_BOARD("physics: coil_switches=%d braked=%d", coil_switches, braked ? 1 : 0);
+          if (max_speed > params.target_velocity * 0.95f) LOG_BOARD("physics: hint: hit velocity cap, increase target_velocity for faster moves");
+          if (max_speed < params.target_velocity * 0.5f) LOG_BOARD("physics: hint: never reached half max speed, increase force_k or reduce friction_kinetic");
+          if (total_ms > 2000) LOG_BOARD("physics: hint: slow move, increase force_k or target_accel");
+          if (braked) LOG_BOARD("physics: hint: braking needed, increase friction_kinetic to slow naturally");
+          if (avg_speed < 1.0f) LOG_BOARD("physics: hint: very slow avg speed, friction may be too high relative to force");
+          return MoveError::NONE;
         }
       }
 
@@ -362,15 +258,12 @@ public:
               piece.x, piece.y, piece.vx, piece.vy, max_speed, coil_idx, path_len);
     if (max_speed < 0.1f) LOG_BOARD("physics: hint: piece barely moved, increase force_k or reduce friction_static");
     if (coil_idx == 0) LOG_BOARD("physics: hint: never switched coils, piece stuck at start");
-    if (sensor_corrections == 0) LOG_BOARD("physics: hint: no sensor data, check sensor_threshold or calibration");
-    if (coil_idx == path_len - 1) LOG_BOARD("physics: hint: reached last coil but sensor didn't detect arrival, reduce sensor_threshold");
+    if (coil_idx == path_len - 1) LOG_BOARD("physics: hint: reached last coil but didn't settle, reduce target_velocity or increase friction");
     return MoveError::COIL_FAILURE;
   }
 
 private:
   Hardware& hw_;
-  const CalSensorData* cal_sensors_ = nullptr;
-  int cal_count_ = 0;
 
   static constexpr uint8_t SR_COLS = 4;
   static constexpr uint8_t SR_ROWS = 3;
@@ -390,10 +283,6 @@ private:
     return (int8_t)(sr_index * 8 + local_bit);
   }
 
-  static uint8_t sensorAt(uint8_t x, uint8_t y) {
-    return (x / SR_BLOCK) * SR_ROWS + (SR_ROWS - 1 - (y / SR_BLOCK));
-  }
-
   // Lateral force: zero at center, peaks at intermediate d, falls off at large d
   float coilForce(float d, const PhysicsParams& p) {
     return p.voltage_scale * p.force_k * d / (powf(d, p.falloff_exp) + p.force_epsilon);
@@ -405,13 +294,6 @@ private:
     // General approx: evaluate at d = eps^(1/exp)
     float d_peak = powf(p.force_epsilon, 1.0f / p.falloff_exp);
     return coilForce(d_peak, p);
-  }
-
-  float sensorDistance(float strength, const PhysicsParams& p) {
-    if (strength <= 0) return 99.0f;
-    float ratio = p.sensor_k / strength;
-    if (ratio <= p.force_epsilon) return 0.0f;
-    return powf(ratio - p.force_epsilon, 1.0f / p.sensor_falloff);
   }
 
   uint8_t forceToDuty(float force, const PhysicsParams& p) {
