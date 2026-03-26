@@ -7,6 +7,7 @@
 #pragma once
 #include "api.h"
 #include "hardware.h"
+#include "physics.h"
 
 // Piece IDs
 #define PIECE_NONE  0
@@ -103,6 +104,64 @@ public:
     return MoveError::NONE;
   }
 
+  // ── Physics Orthogonal Move ──────────────────────────────────
+
+  MoveError movePhysicsOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
+                                  const PhysicsParams& params = PhysicsParams{}, bool skipValidation = false) {
+    LOG_BOARD("movePhysicsOrthogonal: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
+
+    if (fromX >= GRID_COLS || fromY >= GRID_ROWS || toX >= GRID_COLS || toY >= GRID_ROWS)
+      return MoveError::OUT_OF_BOUNDS;
+    if (fromX == toX && fromY == toY) return MoveError::SAME_POSITION;
+    if (fromX != toX && fromY != toY) return MoveError::NOT_ORTHOGONAL;
+
+    if (!skipValidation) {
+      if (getPiece(fromX, fromY) == PIECE_NONE) return MoveError::NO_PIECE_AT_SOURCE;
+      int8_t dx = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
+      int8_t dy = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
+      int8_t cx = fromX + dx, cy = fromY + dy;
+      while (cx != toX || cy != toY) {
+        if (getPiece(cx, cy) != PIECE_NONE) return MoveError::PATH_BLOCKED;
+        cx += dx; cy += dy;
+      }
+    }
+
+    // Build coil path
+    int8_t stepX = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
+    int8_t stepY = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
+    uint8_t path[GRID_COLS + GRID_ROWS][2];
+    int path_len = 0;
+    int8_t cx = fromX, cy = fromY;
+    while (cx != toX || cy != toY) {
+      cx += stepX;
+      cy += stepY;
+      path[path_len][0] = cx;
+      path[path_len][1] = cy;
+      path_len++;
+    }
+
+    // Provide calibration data to physics engine
+    if (cal_data_.valid) {
+      updatePhysicsCalData();
+    }
+
+    // Execute physics move
+    PieceState& ps = piece_states_[fromX][fromY];
+    ps.reset(fromX, fromY);
+    MoveError err = physics_.execute(ps, path, path_len, params);
+
+    if (err == MoveError::NONE) {
+      uint8_t piece = pieces_[fromX][fromY];
+      pieces_[fromX][fromY] = PIECE_NONE;
+      pieces_[toX][toY] = piece;
+      piece_states_[toX][toY] = ps;
+      LOG_BOARD("movePhysicsOrthogonal OK: piece %d now at (%d,%d)", piece, toX, toY);
+    } else {
+      LOG_BOARD("movePhysicsOrthogonal FAILED: %d", (int)err);
+    }
+    return err;
+  }
+
   // ── Calibration ─────────────────────────────────────────────
 
   static constexpr int CAL_BASELINE_SAMPLES = 10000;
@@ -158,6 +217,7 @@ public:
     if (!calValidatePass()) return { false };
 
     cal_data_.valid = true;
+    updatePhysicsCalData();
     LOG_BOARD("CAL: complete");
     initDefaultBoard();
     return { true };
@@ -226,6 +286,18 @@ private:
   Hardware hw_;
   uint8_t pieces_[GRID_COLS][GRID_ROWS];
   CalData cal_data_;
+  PieceState piece_states_[GRID_COLS][GRID_ROWS];
+  PhysicsMove physics_{hw_};
+  CalSensorData cal_sensor_data_[NUM_HALL_SENSORS];
+
+  void updatePhysicsCalData() {
+    if (!cal_data_.valid) return;
+    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
+      cal_sensor_data_[i].baseline_mean = cal_data_.sensors[i].baseline_mean;
+      cal_sensor_data_[i].piece_mean = cal_data_.sensors[i].piece_mean;
+    }
+    physics_.setCalData(cal_sensor_data_, NUM_HALL_SENSORS);
+  }
 
   // ── Default Board ───────────────────────────────────────────
   // 3 white on bottom row, 3 black on top row
@@ -243,6 +315,11 @@ private:
     pieces_[0][6] = PIECE_BLACK;
     pieces_[3][6] = PIECE_BLACK;
     pieces_[6][6] = PIECE_BLACK;
+
+    // Reset physics states
+    for (int x = 0; x < GRID_COLS; x++)
+      for (int y = 0; y < GRID_ROWS; y++)
+        piece_states_[x][y].reset(x, y);
 
     LOG_BOARD("initDefaultBoard: 3 white at y=0, 3 black at y=6");
   }
