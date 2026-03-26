@@ -134,6 +134,25 @@ struct MoveResponse {
   String toJson() const { return Json().add("success", success).add("error", ::toJson(error)).build(); }
 };
 
+struct MovePhysicsRequest {
+  uint8_t from_x;
+  uint8_t from_y;
+  uint8_t to_x;
+  uint8_t to_y;
+  float force_k;
+  float force_epsilon;
+  float falloff_exp;
+  float voltage_scale;
+  float friction_static;
+  float friction_kinetic;
+  float target_velocity;
+  float target_accel;
+  float sensor_k;
+  float sensor_falloff;
+  float sensor_threshold;
+  uint16_t max_duration_ms;
+};
+
 // ── Command Table ─────────────────────────────────────────────
 // Parsed by codegen/generate.py — do not change format
 // API_COMMAND(shutdown, POST, /api/shutdown, ShutdownRequest, ShutdownResponse)
@@ -142,5 +161,6 @@ struct MoveResponse {
 // API_COMMAND(set_rgb, POST, /api/set_rgb, SetRGBRequest, SetRGBResponse)
 // API_COMMAND(set_piece, POST, /api/set_piece, SetPieceRequest, SetRGBResponse)
 // API_COMMAND(move_dumb, POST, /api/move_dumb, MoveDumbRequest, MoveResponse)
+// API_COMMAND(move_physics, POST, /api/move_physics, MovePhysicsRequest, MoveResponse)
 // API_COMMAND(calibrate, POST, /api/calibrate, CalibrateRequest, CalibrateResponse)
 // API_COMMAND(get_calibration, GET, /api/calibration, GetCalibrationRequest, GetCalibrationResponse)

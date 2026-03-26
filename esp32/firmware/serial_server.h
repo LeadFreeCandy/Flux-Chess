@@ -54,6 +54,32 @@ inline String handleMoveDumb(Board& board, const String& params) {
 }
 
 
+inline String handleMovePhysics(Board& board, const String& params) {
+  uint8_t fromX = jsonGet(params, "from_x").toInt();
+  uint8_t fromY = jsonGet(params, "from_y").toInt();
+  uint8_t toX = jsonGet(params, "to_x").toInt();
+  uint8_t toY = jsonGet(params, "to_y").toInt();
+
+  PhysicsParams p;
+  String v;
+  if ((v = jsonGet(params, "force_k")).length())          p.force_k = v.toFloat();
+  if ((v = jsonGet(params, "force_epsilon")).length())     p.force_epsilon = v.toFloat();
+  if ((v = jsonGet(params, "falloff_exp")).length())       p.falloff_exp = v.toFloat();
+  if ((v = jsonGet(params, "voltage_scale")).length())     p.voltage_scale = v.toFloat();
+  if ((v = jsonGet(params, "friction_static")).length())   p.friction_static = v.toFloat();
+  if ((v = jsonGet(params, "friction_kinetic")).length())  p.friction_kinetic = v.toFloat();
+  if ((v = jsonGet(params, "target_velocity")).length())   p.target_velocity = v.toFloat();
+  if ((v = jsonGet(params, "target_accel")).length())      p.target_accel = v.toFloat();
+  if ((v = jsonGet(params, "sensor_k")).length())          p.sensor_k = v.toFloat();
+  if ((v = jsonGet(params, "sensor_falloff")).length())    p.sensor_falloff = v.toFloat();
+  if ((v = jsonGet(params, "sensor_threshold")).length())  p.sensor_threshold = v.toFloat();
+  if ((v = jsonGet(params, "max_duration_ms")).length())   p.max_duration_ms = v.toInt();
+
+  MoveError err = board.movePhysicsOrthogonal(fromX, fromY, toX, toY, p);
+  MoveResponse res = { err == MoveError::NONE, err };
+  return res.toJson();
+}
+
 inline String handleGetCalibration(Board& board, const String&) {
   return board.getCalibration().toJson();
 }
@@ -75,6 +101,7 @@ public:
     on("get_board_state", handleGetBoardState);
     on("set_piece", handleSetPiece);
     on("move_dumb", handleMoveDumb);
+    on("move_physics", handleMovePhysics);
     on("set_rgb", handleSetRGB);
     on("calibrate", handleCalibrate);
     on("get_calibration", handleGetCalibration);
