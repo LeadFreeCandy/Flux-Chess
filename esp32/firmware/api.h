@@ -139,19 +139,12 @@ struct MovePhysicsRequest {
   uint8_t from_y;
   uint8_t to_x;
   uint8_t to_y;
-  float force_k;
-  float force_epsilon;
-  float falloff_exp;
-  float voltage_scale;
-  float friction_static;
-  float friction_kinetic;
-  float target_velocity;
-  float target_accel;
-  float sensor_k;
-  float sensor_falloff;
-  float sensor_threshold;
-  float manual_baseline;
-  float manual_piece_mean;
+  float piece_mass_g;
+  float max_current_a;
+  float mu_static;
+  float mu_kinetic;
+  float target_velocity_mm_s;
+  float target_accel_mm_s2;
   uint16_t max_duration_ms;
 };
 

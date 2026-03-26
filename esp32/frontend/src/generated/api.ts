@@ -80,19 +80,12 @@ export interface MovePhysicsRequest {
   from_y: number;
   to_x: number;
   to_y: number;
-  force_k: number;
-  force_epsilon: number;
-  falloff_exp: number;
-  voltage_scale: number;
-  friction_static: number;
-  friction_kinetic: number;
-  target_velocity: number;
-  target_accel: number;
-  sensor_k: number;
-  sensor_falloff: number;
-  sensor_threshold: number;
-  manual_baseline: number;
-  manual_piece_mean: number;
+  piece_mass_g: number;
+  max_current_a: number;
+  mu_static: number;
+  mu_kinetic: number;
+  target_velocity_mm_s: number;
+  target_accel_mm_s2: number;
   max_duration_ms: number;
 }
 

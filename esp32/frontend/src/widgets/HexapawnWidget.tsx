@@ -14,37 +14,23 @@ const ALL_COLS = [...MAJOR_COLS, GRAVE_COL];
 type Pos = { x: number; y: number };
 
 const DEFAULT_PHYSICS_PARAMS = {
-  force_k: 10.0,
-  force_epsilon: 0.3,
-  falloff_exp: 2.0,
-  voltage_scale: 1.0,
-  friction_static: 3.0,
-  friction_kinetic: 2.0,
-  target_velocity: 5.0,
-  target_accel: 20.0,
-  sensor_k: 500.0,
-  sensor_falloff: 2.0,
-  sensor_threshold: 50.0,
-  manual_baseline: 2030,
-  manual_piece_mean: 1700,
+  piece_mass_g: 4.3,
+  max_current_a: 1.0,
+  mu_static: 0.35,
+  mu_kinetic: 0.25,
+  target_velocity_mm_s: 100,
+  target_accel_mm_s2: 500,
   max_duration_ms: 5000,
 };
 
 const PARAM_INFO: Record<keyof typeof DEFAULT_PHYSICS_PARAMS, string> = {
-  force_k:           "force strength (arb)",
-  force_epsilon:     "force min dist (gu)",
-  falloff_exp:       "force falloff exp",
-  voltage_scale:     "voltage mult (1=nom)",
-  friction_static:   "static fric (force)",
-  friction_kinetic:  "kinetic fric (force/v)",
-  target_velocity:   "max speed (gu/s)",
-  target_accel:      "max accel (gu/s\u00B2)",
-  sensor_k:          "sensor strength (arb)",
-  sensor_falloff:    "sensor falloff exp",
-  sensor_threshold:  "sensor thresh (ADC)",
-  manual_baseline:   "baseline (ADC)",
-  manual_piece_mean: "piece mean (ADC)",
-  max_duration_ms:   "timeout (ms)",
+  piece_mass_g:          "mass (g)",
+  max_current_a:         "max current (A)",
+  mu_static:             "static mu",
+  mu_kinetic:            "kinetic mu",
+  target_velocity_mm_s:  "target v (mm/s)",
+  target_accel_mm_s2:    "target a (mm/s\u00B2)",
+  max_duration_ms:       "timeout (ms)",
 };
 
 function defaultPieces(): number[][] {
@@ -61,6 +47,17 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
   const [usePhysics, setUsePhysics] = useState(false);
   const [showParams, setShowParams] = useState(false);
   const [physicsParams, setPhysicsParams] = useState(DEFAULT_PHYSICS_PARAMS);
+  const [simPos, setSimPos] = useState<{ x: number; y: number } | null>(null);
+
+  // Listen for simulated position updates from MoveTestWidget
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      setSimPos(detail ? { x: detail.x, y: detail.y } : null);
+    };
+    window.addEventListener("fluxchess-sim-pos", handler);
+    return () => window.removeEventListener("fluxchess-sim-pos", handler);
+  }, []);
 
   useEffect(() => {
     const saved = localStorage.getItem('fluxchess_physics_params');
@@ -166,7 +163,7 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
               {label}
               <input
                 type="number"
-                step={['max_duration_ms', 'manual_baseline', 'manual_piece_mean'].includes(key) ? 1 : 0.1}
+                step={key === 'max_duration_ms' ? 1 : (key === 'mu_static' || key === 'mu_kinetic') ? 0.01 : (key === 'target_velocity_mm_s' || key === 'target_accel_mm_s2') ? 1 : 0.1}
                 value={physicsParams[key]}
                 onChange={e => updateParam(key, e.target.value)}
                 style={{ ...inputStyle, width: 70 }}
@@ -178,6 +175,7 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
 
       {usePhysics && showParams && <PhysicsDebug p={physicsParams} />}
 
+      <div style={{ position: "relative" }}>
       <div style={{
         display: "grid",
         gridTemplateColumns: `repeat(4, 70px)`,
@@ -215,42 +213,47 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
           })
         )}
       </div>
+      {simPos && (() => {
+        // Map continuous grid coords to pixel position on the board
+        // Grid: 4 columns (0,3,6,9) mapped to 0-3, each cell is 70px + 4px gap
+        // padding: 6px on each side
+        const colIdx = simPos.x / 3;  // 0-3 for cols 0,3,6,9
+        const rowIdx = 2 - simPos.y / 3;  // inverted, 0=top
+        const cellSize = 70;
+        const gap = 4;
+        const pad = 6;
+        const px = pad + colIdx * (cellSize + gap) + cellSize / 2;
+        const py = pad + rowIdx * (cellSize + gap) + cellSize / 2;
+        return (
+          <div style={{
+            position: "absolute", left: px - 8, top: py - 8,
+            width: 16, height: 16, borderRadius: "50%",
+            background: "rgba(255, 50, 50, 0.8)",
+            border: "2px solid #fff",
+            pointerEvents: "none",
+            transition: "left 0.05s, top 0.05s",
+            zIndex: 10,
+          }} />
+        );
+      })()}
+      </div>
     </div>
   );
 }
 
 function PhysicsDebug({ p }: { p: typeof DEFAULT_PHYSICS_PARAMS }) {
-  const { force_k, force_epsilon: eps, falloff_exp: exp, voltage_scale: vs,
-          friction_static, friction_kinetic, target_velocity: tv, target_accel: ta,
-          sensor_k, sensor_falloff, sensor_threshold, manual_baseline, manual_piece_mean,
-          max_duration_ms } = p;
+  const { piece_mass_g, max_current_a, mu_static, mu_kinetic,
+          target_velocity_mm_s: tv, target_accel_mm_s2: ta } = p;
 
-  // Peak force distance: d where d/(d^exp + eps) is maximized
-  const d_peak = Math.pow(eps, 1 / exp);
-  const f_peak = vs * force_k * d_peak / (Math.pow(d_peak, exp) + eps);
-
-  // Force at 1 grid unit (adjacent coil)
-  const f_at_1 = vs * force_k * 1.0 / (Math.pow(1.0, exp) + eps);
-
-  // Time to cross board (9 units at target velocity)
-  const t_cross = 9.0 / tv;
-
-  // Time to reach target velocity from rest
-  const t_accel = tv / ta;
-
-  // Distance covered during acceleration
-  const d_accel = 0.5 * ta * t_accel * t_accel;
-
-  // Sensor activation range: solve sensor_k / (d^sensor_falloff + eps) = sensor_threshold
-  // → d = ((sensor_k / sensor_threshold) - eps) ^ (1/sensor_falloff)
-  const s_ratio = sensor_k / sensor_threshold;
-  const d_sensor = s_ratio > eps ? Math.pow(s_ratio - eps, 1 / sensor_falloff) : 0;
-
-  // Sensor range at full detection (reading = piece_mean, strength ≈ sensor_k at d≈0)
-  // Basically d_sensor is max detection range
-
-  // Braking distance: v^2 / (2 * friction_kinetic) — rough, ignoring coil force
-  const d_brake = (tv * tv) / (2 * friction_kinetic);
+  const weight = piece_mass_g * 9.81;  // mN
+  const peak_fx = 54.0 * max_current_a;  // approx from force table L0
+  const peak_fz = 101.0 * max_current_a;
+  const normal_active = weight + peak_fz;
+  const static_fric = mu_static * normal_active;
+  const kinetic_fric = mu_kinetic * weight;  // coil off during coast
+  const t_cross = 9 * 12.667 / tv;  // 9 grid units in mm
+  const coast_decel = kinetic_fric / (piece_mass_g * 1e-3);
+  const stop_dist = (tv * tv) / (2 * coast_decel);
 
   const row = (label: string, value: string) => (
     <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -265,29 +268,20 @@ function PhysicsDebug({ p }: { p: typeof DEFAULT_PHYSICS_PARAMS }) {
       background: "#0a0a1a", padding: 10, borderRadius: 6, border: "1px solid #2a2a4a",
       fontSize: 11, fontFamily: "monospace", display: "flex", flexDirection: "column", gap: 2,
     }}>
-      <div style={{ color: "#666", fontSize: 10, marginBottom: 4 }}>DERIVED VALUES (gu = grid unit, 1 gu = coil spacing)</div>
-      {row("Peak force", `${f_peak.toFixed(1)} at d=${d_peak.toFixed(2)} gu`)}
-      {row("Force at adjacent coil (1 gu)", `${f_at_1.toFixed(1)}`)}
-      {row("Can overcome stiction?", `${f_peak.toFixed(1)} / ${friction_static.toFixed(1)} = ${(f_peak / friction_static).toFixed(1)}x`)}
-      {row("Friction at max speed", `${(friction_kinetic * tv).toFixed(1)} (${((friction_kinetic * tv) / f_peak * 100).toFixed(0)}% of peak force)`)}
-      {row("Board traverse (9 gu)", `${t_cross.toFixed(2)}s at ${tv.toFixed(1)} gu/s`)}
-      {row("0 to max speed", `${(t_accel * 1000).toFixed(0)}ms over ${d_accel.toFixed(2)} gu`)}
-      {row("Friction-only braking", `${d_brake.toFixed(1)} gu (coils help in practice)`)}
-      {row("Sensor detect range", `${d_sensor.toFixed(1)} gu from sensor center`)}
-      {row("Manual cal", `${manual_baseline.toFixed(0)} → ${manual_piece_mean.toFixed(0)} ADC (delta ${(manual_baseline - manual_piece_mean).toFixed(0)})`)}
-      {f_peak < friction_static && (
+      <div style={{ color: "#666", fontSize: 10, marginBottom: 4 }}>REAL-UNIT PHYSICS</div>
+      {row("Piece weight", `${weight.toFixed(1)} mN`)}
+      {row("Peak lateral (L0, 1A)", `${(54.0 * max_current_a).toFixed(1)} mN`)}
+      {row("Peak Fz (L0, 1A)", `${peak_fz.toFixed(1)} mN (downward)`)}
+      {row("Normal force (coil on)", `${normal_active.toFixed(1)} mN`)}
+      {row("Static friction (coil on)", `${static_fric.toFixed(1)} mN`)}
+      {row("Can overcome stiction?", peak_fx > static_fric ? `YES (${(peak_fx/static_fric).toFixed(1)}x)` : "NO")}
+      {row("Coast friction (coil off)", `${kinetic_fric.toFixed(1)} mN`)}
+      {row("Coast decel", `${coast_decel.toFixed(0)} mm/s\u00B2`)}
+      {row("Stopping distance", `${stop_dist.toFixed(1)} mm at ${tv} mm/s`)}
+      {row("Board traverse (114mm)", `${t_cross.toFixed(2)}s`)}
+      {peak_fx < static_fric && (
         <div style={{ color: "#ef5350", marginTop: 4 }}>
-          Peak force ({f_peak.toFixed(2)}) &lt; static friction ({friction_static}) — piece won't move!
-        </div>
-      )}
-      {d_brake > 1.5 && (
-        <div style={{ color: "#ff9800", marginTop: 4 }}>
-          Braking distance ({d_brake.toFixed(1)}u) &gt; 1.5u — piece may overshoot sensors
-        </div>
-      )}
-      {d_sensor < 0.5 && (
-        <div style={{ color: "#ff9800", marginTop: 4 }}>
-          Sensor range ({d_sensor.toFixed(2)}u) very short — correction may be delayed
+          Peak force ({peak_fx.toFixed(1)}) &lt; static friction ({static_fric.toFixed(1)}) — piece won't move!
         </div>
       )}
     </div>

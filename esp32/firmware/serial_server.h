@@ -70,20 +70,13 @@ inline String handleMovePhysics(Board& board, const String& params) {
 inline PhysicsParams parsePhysicsParams(const String& params) {
   PhysicsParams p;
   String v;
-  if ((v = jsonGet(params, "force_k")).length())          p.force_k = v.toFloat();
-  if ((v = jsonGet(params, "force_epsilon")).length())     p.force_epsilon = v.toFloat();
-  if ((v = jsonGet(params, "falloff_exp")).length())       p.falloff_exp = v.toFloat();
-  if ((v = jsonGet(params, "voltage_scale")).length())     p.voltage_scale = v.toFloat();
-  if ((v = jsonGet(params, "friction_static")).length())   p.friction_static = v.toFloat();
-  if ((v = jsonGet(params, "friction_kinetic")).length())  p.friction_kinetic = v.toFloat();
-  if ((v = jsonGet(params, "target_velocity")).length())   p.target_velocity = v.toFloat();
-  if ((v = jsonGet(params, "target_accel")).length())      p.target_accel = v.toFloat();
-  if ((v = jsonGet(params, "sensor_k")).length())          p.sensor_k = v.toFloat();
-  if ((v = jsonGet(params, "sensor_falloff")).length())    p.sensor_falloff = v.toFloat();
-  if ((v = jsonGet(params, "sensor_threshold")).length())  p.sensor_threshold = v.toFloat();
-  if ((v = jsonGet(params, "manual_baseline")).length())   p.manual_baseline = v.toFloat();
-  if ((v = jsonGet(params, "manual_piece_mean")).length())  p.manual_piece_mean = v.toFloat();
-  if ((v = jsonGet(params, "max_duration_ms")).length())   p.max_duration_ms = v.toInt();
+  if ((v = jsonGet(params, "piece_mass_g")).length())         p.piece_mass_g = v.toFloat();
+  if ((v = jsonGet(params, "max_current_a")).length())        p.max_current_a = v.toFloat();
+  if ((v = jsonGet(params, "mu_static")).length())            p.mu_static = v.toFloat();
+  if ((v = jsonGet(params, "mu_kinetic")).length())           p.mu_kinetic = v.toFloat();
+  if ((v = jsonGet(params, "target_velocity_mm_s")).length()) p.target_velocity_mm_s = v.toFloat();
+  if ((v = jsonGet(params, "target_accel_mm_s2")).length())   p.target_accel_mm_s2 = v.toFloat();
+  if ((v = jsonGet(params, "max_duration_ms")).length())      p.max_duration_ms = v.toInt();
   return p;
 }
 
