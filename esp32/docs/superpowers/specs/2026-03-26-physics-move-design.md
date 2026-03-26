@@ -20,9 +20,10 @@ struct PieceState {
 
 ```cpp
 struct PhysicsParams {
-  // Force model
+  // Force model: F = voltage_scale * force_k / (d^falloff_exp + epsilon)
   float force_k;          // coil force constant (tunable)
   float force_epsilon;    // min distance to prevent singularity
+  float falloff_exp;      // distance falloff exponent (2.0=inverse square, 3.0=steeper)
   float voltage_scale;    // multiplier for coil strength (1.0 = nominal)
 
   // Friction
@@ -54,7 +55,7 @@ Runs inline (blocking) inside `movePhysicsOrthogonal`. Sub-millisecond ticks usi
 ### Per-tick steps:
 
 1. **Measure dt**: `dt = (micros() - last_tick) / 1e6` (in seconds)
-2. **Compute coil force**: `F = voltage_scale * force_k / (dist + epsilon)^2`, directed from piece toward active coil center
+2. **Compute coil force**: `F = voltage_scale * force_k / (dist^falloff_exp + epsilon)`, directed from piece toward active coil center
 3. **Apply friction**:
    - If `stuck`: check if `|F_coil| > friction_static`. If yes, `stuck = false`. If no, velocity stays zero, skip to step 8.
    - If moving: `F_friction = -friction_kinetic * velocity` (viscous damping)
@@ -101,7 +102,7 @@ Correction only applies when:
 
 Linear: `duty = clamp(|F_coil| / max_force * 255, 0, 255)`
 
-Where `max_force = voltage_scale * force_k / epsilon^2` (force at zero distance). This ensures duty=255 at maximum force and scales down from there.
+Where `max_force = voltage_scale * force_k / epsilon` (force at zero distance). This ensures duty=255 at maximum force and scales down from there.
 
 ## Arrival and Stopping
 
@@ -158,6 +159,7 @@ When the piece reaches the final coil in the path:
 |-----------|---------|-------------|
 | force_k | TBD (tune empirically) | Coil force magnitude constant |
 | force_epsilon | 0.5 | Min distance to prevent singularity |
+| falloff_exp | 2.0 | Distance falloff exponent |
 | voltage_scale | 1.0 | Voltage multiplier for force |
 | friction_static | TBD (tune empirically) | Force to overcome stiction |
 | friction_kinetic | TBD (tune empirically) | Viscous damping coefficient |
