@@ -126,36 +126,24 @@ public:
       }
     }
 
-    // Build coil path
+    // Build coil path in mm
     int8_t stepX = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
     int8_t stepY = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
-    uint8_t path[GRID_COLS + GRID_ROWS][2];
+    float path_mm[GRID_COLS + GRID_ROWS][2];
     int path_len = 0;
     int8_t cx = fromX, cy = fromY;
     while (cx != toX || cy != toY) {
       cx += stepX;
       cy += stepY;
-      path[path_len][0] = cx;
-      path[path_len][1] = cy;
+      path_mm[path_len][0] = cx * GRID_TO_MM;
+      path_mm[path_len][1] = cy * GRID_TO_MM;
       path_len++;
-    }
-
-    // Provide calibration data to physics engine
-    if (cal_data_.valid) {
-      updatePhysicsCalData();
-    } else {
-      // Use manual baseline/piece_mean for all sensors
-      for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-        cal_sensor_data_[i].baseline_mean = params.manual_baseline;
-        cal_sensor_data_[i].piece_mean = params.manual_piece_mean;
-      }
-      physics_.setCalData(cal_sensor_data_, NUM_HALL_SENSORS);
     }
 
     // Execute physics move
     PieceState& ps = piece_states_[fromX][fromY];
-    ps.reset(fromX, fromY);
-    MoveError err = physics_.execute(ps, path, path_len, params);
+    ps.reset(fromX * GRID_TO_MM, fromY * GRID_TO_MM);
+    MoveError err = physics_.execute(ps, path_mm, path_len, params);
 
     if (err == MoveError::NONE) {
       uint8_t piece = pieces_[fromX][fromY];
@@ -387,14 +375,8 @@ public:
     unsigned long elapsed_ms[TUNE_NUM_REPS];
 
     PhysicsParams test_params;
-    test_params.force_k = fitted_force_k;
-    test_params.force_epsilon = eps;
-    test_params.friction_static = fitted_friction_static;
-    test_params.friction_kinetic = fitted_friction_kinetic;
-    test_params.sensor_k = fitted_sensor_k;
-    test_params.sensor_falloff = fitted_sensor_falloff;
-    test_params.manual_baseline = baseline;
-    test_params.manual_piece_mean = readings_d0[TUNE_NUM_REPS / 2];
+    test_params.mu_static = fitted_friction_static;
+    test_params.mu_kinetic = fitted_friction_kinetic;
 
     for (int rep = 0; rep < TUNE_NUM_REPS; rep++) {
       // Move piece to (5,3)
@@ -466,11 +448,6 @@ public:
     j += ",\"friction_kinetic\":"; j += String(fitted_friction_kinetic, 2);
     j += ",\"target_velocity\":5.0";
     j += ",\"target_accel\":20.0";
-    j += ",\"sensor_k\":"; j += String(fitted_sensor_k, 1);
-    j += ",\"sensor_falloff\":"; j += String(fitted_sensor_falloff, 2);
-    j += ",\"sensor_threshold\":50.0";
-    j += ",\"manual_baseline\":"; j += String(baseline, 1);
-    j += ",\"manual_piece_mean\":"; j += String((float)readings_d0[TUNE_NUM_REPS / 2], 1);
     j += ",\"max_duration_ms\":5000";
     j += "}}";
 
@@ -534,7 +511,6 @@ public:
     if (!calValidatePass()) return { false };
 
     cal_data_.valid = true;
-    updatePhysicsCalData();
     LOG_BOARD("CAL: complete");
     initDefaultBoard();
     return { true };
@@ -605,17 +581,6 @@ private:
   CalData cal_data_;
   PieceState piece_states_[GRID_COLS][GRID_ROWS];
   PhysicsMove physics_{hw_};
-  CalSensorData cal_sensor_data_[NUM_HALL_SENSORS];
-
-  void updatePhysicsCalData() {
-    if (!cal_data_.valid) return;
-    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      cal_sensor_data_[i].baseline_mean = cal_data_.sensors[i].baseline_mean;
-      cal_sensor_data_[i].piece_mean = cal_data_.sensors[i].piece_mean;
-    }
-    physics_.setCalData(cal_sensor_data_, NUM_HALL_SENSORS);
-  }
-
   // ── Default Board ───────────────────────────────────────────
   // 3 white on bottom row, 3 black on top row
   // Missing 4th piece on each side (only 3 per side)
@@ -636,7 +601,7 @@ private:
     // Reset physics states
     for (int x = 0; x < GRID_COLS; x++)
       for (int y = 0; y < GRID_ROWS; y++)
-        piece_states_[x][y].reset(x, y);
+        piece_states_[x][y].reset(x * GRID_TO_MM, y * GRID_TO_MM);
 
     LOG_BOARD("initDefaultBoard: 3 white at y=0, 3 black at y=6");
   }
