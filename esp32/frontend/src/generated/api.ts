@@ -91,6 +91,8 @@ export interface MovePhysicsRequest {
   sensor_k: number;
   sensor_falloff: number;
   sensor_threshold: number;
+  manual_baseline: number;
+  manual_piece_mean: number;
   max_duration_ms: number;
 }
 
@@ -102,6 +104,7 @@ export const commands = {
   set_piece: { method: "POST", path: "/api/set_piece" },
   move_dumb: { method: "POST", path: "/api/move_dumb" },
   move_physics: { method: "POST", path: "/api/move_physics" },
+  tune_physics: { method: "POST", path: "/api/tune_physics" },
   calibrate: { method: "POST", path: "/api/calibrate" },
   get_calibration: { method: "GET", path: "/api/calibration" },
 } as const;
@@ -132,6 +135,10 @@ export function moveDumb(params: MoveDumbRequest): Promise<MoveResponse> {
 
 export function movePhysics(params: MovePhysicsRequest): Promise<MoveResponse> {
   return transport.call("move_physics", params);
+}
+
+export function tunePhysics(params: MovePhysicsRequest): Promise<GetCalibrationResponse> {
+  return transport.call("tune_physics", params);
 }
 
 export function calibrate(): Promise<CalibrateResponse> {

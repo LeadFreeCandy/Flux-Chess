@@ -143,6 +143,13 @@ public:
     // Provide calibration data to physics engine
     if (cal_data_.valid) {
       updatePhysicsCalData();
+    } else {
+      // Use manual baseline/piece_mean for all sensors
+      for (int i = 0; i < NUM_HALL_SENSORS; i++) {
+        cal_sensor_data_[i].baseline_mean = params.manual_baseline;
+        cal_sensor_data_[i].piece_mean = params.manual_piece_mean;
+      }
+      physics_.setCalData(cal_sensor_data_, NUM_HALL_SENSORS);
     }
 
     // Execute physics move
@@ -160,6 +167,84 @@ public:
       LOG_BOARD("movePhysicsOrthogonal FAILED: %d", (int)err);
     }
     return err;
+  }
+
+  // ── Physics Tuning ────────────────────────────────────────────
+  // Place piece at (3,3), attempts moves in 4 directions, measures sensor accuracy.
+
+  String tunePhysics(const PhysicsParams& params) {
+    LOG_BOARD("TUNE: start — place piece at (3,3)");
+
+    // Read initial sensor at (3,3)
+    uint8_t si_start = sensorForGrid(3, 3);
+    uint16_t start_reading = hw_.readSensor(si_start);
+    LOG_BOARD("TUNE: initial sensor s%d = %d", si_start, start_reading);
+
+    // Set piece at (3,3)
+    memset(pieces_, PIECE_NONE, sizeof(pieces_));
+    pieces_[3][3] = PIECE_WHITE;
+
+    struct Trial {
+      uint8_t to_x, to_y;
+      const char* dir;
+    };
+    Trial trials[] = {
+      {6, 3, "+X"}, {3, 3, "-X"},  // move right then back
+      {3, 6, "+Y"}, {3, 3, "-Y"},  // move up then back
+    };
+
+    String json = "{\"trials\":[";
+    bool first = true;
+
+    for (auto& t : trials) {
+      uint8_t fx = pieces_[3][3] != PIECE_NONE ? 3 : t.to_x;  // where piece currently is
+      // find the piece
+      uint8_t from_x = 0, from_y = 0;
+      for (int x = 0; x < GRID_COLS; x++)
+        for (int y = 0; y < GRID_ROWS; y++)
+          if (pieces_[x][y] != PIECE_NONE) { from_x = x; from_y = y; }
+
+      LOG_BOARD("TUNE: trial %s: (%d,%d)->(%d,%d)", t.dir, from_x, from_y, t.to_x, t.to_y);
+
+      unsigned long t0 = millis();
+      MoveError err = movePhysicsOrthogonal(from_x, from_y, t.to_x, t.to_y, params, true);
+      unsigned long elapsed = millis() - t0;
+
+      // Read destination sensor
+      uint8_t si_dest = sensorForGrid(t.to_x, t.to_y);
+      delay(100); // settle
+      uint16_t dest_reading = hw_.readSensor(si_dest);
+
+      // Read all sensors to see where the piece actually ended up
+      uint16_t all[NUM_HALL_SENSORS];
+      hw_.readAllSensors(all, NUM_HALL_SENSORS);
+
+      // Find which sensor has lowest reading (piece is there)
+      uint8_t best_si = 0;
+      uint16_t best_val = 4095;
+      for (int i = 0; i < NUM_HALL_SENSORS; i++) {
+        if (all[i] < best_val) { best_val = all[i]; best_si = i; }
+      }
+
+      LOG_BOARD("TUNE: %s result: err=%d t=%lums dest_s%d=%d best_s%d=%d",
+                t.dir, (int)err, elapsed, si_dest, dest_reading, best_si, best_val);
+
+      if (!first) json += ",";
+      first = false;
+      json += "{\"dir\":\""; json += t.dir;
+      json += "\",\"err\":"; json += String((int)err);
+      json += ",\"ms\":"; json += String(elapsed);
+      json += ",\"dest_sensor\":"; json += String(si_dest);
+      json += ",\"dest_reading\":"; json += String(dest_reading);
+      json += ",\"best_sensor\":"; json += String(best_si);
+      json += ",\"best_reading\":"; json += String(best_val);
+      json += "}";
+    }
+
+    json += "]}";
+    LOG_BOARD("TUNE: complete");
+    initDefaultBoard();
+    return json;
   }
 
   // ── Calibration ─────────────────────────────────────────────
@@ -421,6 +506,11 @@ private:
       }
     }
     return true;
+  }
+
+  // Map grid position to sensor index (column-major, inverted rows)
+  static uint8_t sensorForGrid(uint8_t x, uint8_t y) {
+    return (x / SR_BLOCK) * SR_ROWS + (SR_ROWS - 1 - (y / SR_BLOCK));
   }
 
   // Wrapper: move with skipValidation, handles diagonals, log on error

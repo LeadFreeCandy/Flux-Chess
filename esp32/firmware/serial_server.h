@@ -54,12 +54,20 @@ inline String handleMoveDumb(Board& board, const String& params) {
 }
 
 
+inline PhysicsParams parsePhysicsParams(const String& params);
+
 inline String handleMovePhysics(Board& board, const String& params) {
   uint8_t fromX = jsonGet(params, "from_x").toInt();
   uint8_t fromY = jsonGet(params, "from_y").toInt();
   uint8_t toX = jsonGet(params, "to_x").toInt();
   uint8_t toY = jsonGet(params, "to_y").toInt();
+  PhysicsParams p = parsePhysicsParams(params);
+  MoveError err = board.movePhysicsOrthogonal(fromX, fromY, toX, toY, p);
+  MoveResponse res = { err == MoveError::NONE, err };
+  return res.toJson();
+}
 
+inline PhysicsParams parsePhysicsParams(const String& params) {
   PhysicsParams p;
   String v;
   if ((v = jsonGet(params, "force_k")).length())          p.force_k = v.toFloat();
@@ -73,11 +81,15 @@ inline String handleMovePhysics(Board& board, const String& params) {
   if ((v = jsonGet(params, "sensor_k")).length())          p.sensor_k = v.toFloat();
   if ((v = jsonGet(params, "sensor_falloff")).length())    p.sensor_falloff = v.toFloat();
   if ((v = jsonGet(params, "sensor_threshold")).length())  p.sensor_threshold = v.toFloat();
+  if ((v = jsonGet(params, "manual_baseline")).length())   p.manual_baseline = v.toFloat();
+  if ((v = jsonGet(params, "manual_piece_mean")).length())  p.manual_piece_mean = v.toFloat();
   if ((v = jsonGet(params, "max_duration_ms")).length())   p.max_duration_ms = v.toInt();
+  return p;
+}
 
-  MoveError err = board.movePhysicsOrthogonal(fromX, fromY, toX, toY, p);
-  MoveResponse res = { err == MoveError::NONE, err };
-  return res.toJson();
+inline String handleTunePhysics(Board& board, const String& params) {
+  PhysicsParams p = parsePhysicsParams(params);
+  return board.tunePhysics(p);
 }
 
 inline String handleGetCalibration(Board& board, const String&) {
@@ -102,6 +114,7 @@ public:
     on("set_piece", handleSetPiece);
     on("move_dumb", handleMoveDumb);
     on("move_physics", handleMovePhysics);
+    on("tune_physics", handleTunePhysics);
     on("set_rgb", handleSetRGB);
     on("calibrate", handleCalibrate);
     on("get_calibration", handleGetCalibration);

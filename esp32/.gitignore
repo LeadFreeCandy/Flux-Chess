@@ -10,3 +10,4 @@ frontend/src/generated/
 data/
 codegen/.venv/
 **/target/
+build_test/

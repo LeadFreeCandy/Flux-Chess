@@ -42,9 +42,11 @@ export default function SerialWidget({ onStatus }: WidgetProps) {
             >{label}</button>
           ))}
         </div>
+        <button onClick={() => navigator.clipboard.writeText(filtered.map(e => e.data).join("\n"))}
+          style={{ ...btnStyle, background: "#2a2a4a", border: "1px solid #333", fontSize: 11 }}>Copy</button>
         <button onClick={handleShutdown} style={{ ...btnStyle, background: "#b71c1c", fontSize: 11 }}>Shutdown ESP32</button>
       </div>
-      <div ref={containerRef} style={{ background: "#0a0a0a", border: "1px solid #333", borderRadius: 8, padding: 12, height: 200, overflowY: "auto", fontFamily: "monospace", fontSize: 12 }}>
+      <div ref={containerRef} style={{ background: "#0a0a0a", border: "1px solid #333", borderRadius: 8, padding: 12, height: 200, overflowY: "auto", fontFamily: "monospace", fontSize: 12, userSelect: "text", cursor: "text" }}>
         {filtered.map((entry, i) => (
           <div key={i} style={{ color: entry.dir === "tx" ? "#4fc3f7" : LOG_COLORS[entry.level] }}>
             <span style={{ color: "#555" }}>{new Date(entry.ts).toLocaleTimeString("en", { hour12: false, fractionalSecondDigits: 3 })}</span>{" "}

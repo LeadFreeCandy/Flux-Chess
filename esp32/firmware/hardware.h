@@ -32,13 +32,14 @@ public:
       pinMode(HALL_PINS[i], INPUT);
     }
 
+    analogWriteFrequency(PIN_SR_OE, 10000); // 10kHz PWM for OE
+
     pinMode(PIN_DC1, INPUT);
     pinMode(PIN_DC2, INPUT);
 
     memset(sr_state_, 0, sizeof(sr_state_));
     memset(heat_ms_, 0, sizeof(heat_ms_));
     memset(heat_updated_, 0, sizeof(heat_updated_));
-    memset(bit_on_since_, 0, sizeof(bit_on_since_));
 
     sr_mutex_ = xSemaphoreCreateMutex();
     srClear();
@@ -100,6 +101,37 @@ public:
     return true;
   }
 
+  // Activate a coil and leave it on (for use with sustainCoil).
+  // Clears all bits, sets the requested bit, flushes to hardware.
+  bool startCoil(uint8_t globalBit, uint8_t pwm_duty = 255) {
+    if (!validateBit(globalBit)) return false;
+
+    xSemaphoreTake(sr_mutex_, portMAX_DELAY);
+    memset(sr_state_, 0, sizeof(sr_state_));
+
+    uint8_t reg = globalBit / 8;
+    uint8_t pos = globalBit % 8;
+    sr_state_[reg] |= (1 << pos);
+
+    srWriteInternal();
+    xSemaphoreGive(sr_mutex_);
+
+    srSetPWM(pwm_duty);
+    return true;
+  }
+
+  // Turn off the active coil and flush to hardware.
+  void stopCoil(uint8_t globalBit) {
+    srSetPWM(0);
+
+    xSemaphoreTake(sr_mutex_, portMAX_DELAY);
+    uint8_t reg = globalBit / 8;
+    uint8_t pos = globalBit % 8;
+    sr_state_[reg] &= ~(1 << pos);
+    srWriteInternal();
+    xSemaphoreGive(sr_mutex_);
+  }
+
   // Sustain the currently active coil without SPI writes.
   // Must be the same bit as the last pulseBit/sustainCoil call.
   // Returns false if bit mismatch or validation fails.
@@ -147,7 +179,6 @@ private:
   uint8_t sr_state_[NUM_SHIFT_REGISTERS];
   float heat_ms_[SR_CHAIN_BITS];
   unsigned long heat_updated_[SR_CHAIN_BITS];
-  unsigned long bit_on_since_[SR_CHAIN_BITS];
   SemaphoreHandle_t sr_mutex_;
   TaskHandle_t watchdog_handle_ = nullptr;
 
@@ -187,13 +218,8 @@ private:
     uint8_t pos = bit % 8;
     if (val) {
       sr_state_[reg] |= (1 << pos);
-      if (bit_on_since_[bit] == 0) {
-        bit_on_since_[bit] = millis();
-        if (bit_on_since_[bit] == 0) bit_on_since_[bit] = 1;
-      }
     } else {
       sr_state_[reg] &= ~(1 << pos);
-      bit_on_since_[bit] = 0;
     }
     xSemaphoreGive(sr_mutex_);
   }
@@ -201,7 +227,6 @@ private:
   void srClear() {
     xSemaphoreTake(sr_mutex_, portMAX_DELAY);
     memset(sr_state_, 0, sizeof(sr_state_));
-    memset(bit_on_since_, 0, sizeof(bit_on_since_));
     xSemaphoreGive(sr_mutex_);
     srWriteInternal();
   }
@@ -232,39 +257,16 @@ private:
 
   // ── Watchdog Thread ───────────────────────────────────────
 
+  // Watchdog: periodically flushes sr_state_ to hardware.
+  // Thermal protection is handled by decayHeat in pulseBit/startCoil.
   static void watchdogTask(void* param) {
     Hardware* hw = static_cast<Hardware*>(param);
     for (;;) {
       vTaskDelay(pdMS_TO_TICKS(WATCHDOG_INTERVAL_MS));
 
       xSemaphoreTake(hw->sr_mutex_, portMAX_DELAY);
-
-      unsigned long now = millis();
-      bool forced_clear = false;
-      for (int bit = 0; bit < SR_CHAIN_BITS; bit++) {
-        if (hw->bit_on_since_[bit] != 0) {
-          unsigned long on_for = now - hw->bit_on_since_[bit];
-          if (on_for > MAX_PULSE_MS) {
-            uint8_t reg = bit / 8;
-            uint8_t pos = bit % 8;
-            hw->sr_state_[reg] &= ~(1 << pos);
-            hw->bit_on_since_[bit] = 0;
-            hw->heat_ms_[bit] = THERMAL_MAX_HEAT_MS;
-            hw->heat_updated_[bit] = now;
-            forced_clear = true;
-            LOG_HW("WATCHDOG: force-cleared SR%d pin %d (on for %lums, max %dms)",
-                    reg, pos, on_for, MAX_PULSE_MS);
-          }
-        }
-      }
-
       hw->srWriteInternal();
       xSemaphoreGive(hw->sr_mutex_);
-
-      if (forced_clear) {
-        hw->srSetOE(false);
-        LOG_HW("WATCHDOG: OE disabled after force-clear");
-      }
     }
   }
 };
