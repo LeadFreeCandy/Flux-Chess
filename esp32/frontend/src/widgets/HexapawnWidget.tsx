@@ -62,6 +62,17 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
   const [showParams, setShowParams] = useState(false);
   const [physicsParams, setPhysicsParams] = useState(DEFAULT_PHYSICS_PARAMS);
 
+  useEffect(() => {
+    const saved = localStorage.getItem('fluxchess_physics_params');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setPhysicsParams(p => ({ ...p, ...parsed }));
+        localStorage.removeItem('fluxchess_physics_params');  // consume once
+      } catch {}
+    }
+  }, []);
+
   const fetchBoard = async () => {
     try {
       const res = await getBoardState();

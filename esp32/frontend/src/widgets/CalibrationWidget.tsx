@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { calibrate, getCalibration } from "../generated/api";
+import { calibrate, getCalibration, tunePhysics } from "../generated/api";
 import { onSerialLog, type SerialLogEntry } from "../transport";
 import { type WidgetProps, btnStyle } from "./shared";
 
@@ -25,6 +25,11 @@ export default function CalibrationWidget({ onStatus }: WidgetProps) {
   const logsRef = useRef<string[]>([]);
   const logBoxRef = useRef<HTMLDivElement>(null);
 
+  const [tuneStep, setTuneStep] = useState<"idle" | "running" | "done">("idle");
+  const [tuneLogs, setTuneLogs] = useState<string[]>([]);
+  const [tuneResult, setTuneResult] = useState<any>(null);
+  const tuneLogsRef = useRef<string[]>([]);
+
   const startCalibration = async () => {
     setStep("running");
     setCalData(null);
@@ -49,10 +54,10 @@ export default function CalibrationWidget({ onStatus }: WidgetProps) {
     });
 
     try {
-      const res = await calibrate({});
+      const res = await calibrate();
       if (res.success) {
         onStatus("Calibration complete");
-        const data = await getCalibration() as CalData;
+        const data = (await getCalibration()) as unknown as CalData;
         if (data.valid) setCalData(data);
       } else {
         onStatus("Calibration failed");
@@ -67,7 +72,7 @@ export default function CalibrationWidget({ onStatus }: WidgetProps) {
 
   const fetchCalData = async () => {
     try {
-      const data = await getCalibration() as CalData;
+      const data = (await getCalibration()) as unknown as CalData;
       if (data.valid) {
         setCalData(data);
         setShowViz(true);
@@ -91,6 +96,43 @@ export default function CalibrationWidget({ onStatus }: WidgetProps) {
     URL.revokeObjectURL(url);
   };
 
+  const startTuning = async () => {
+    setTuneStep("running");
+    tuneLogsRef.current = [];
+    setTuneLogs([]);
+    setTuneResult(null);
+    onStatus("Tuning physics...");
+
+    const unsub = onSerialLog((entry: SerialLogEntry) => {
+      if (entry.dir === "rx") {
+        try {
+          const msg = JSON.parse(entry.data);
+          if (msg.type === "log" && typeof msg.msg === "string" && msg.msg.startsWith("TUNE:")) {
+            tuneLogsRef.current = [...tuneLogsRef.current, msg.msg];
+            setTuneLogs(tuneLogsRef.current);
+          }
+        } catch {}
+      }
+    });
+
+    try {
+      const res = await tunePhysics();
+      setTuneResult(res);
+      onStatus("Tuning complete");
+    } catch (e) {
+      onStatus(`Tuning error: ${e}`);
+    }
+
+    unsub();
+    setTuneStep("done");
+  };
+
+  const applyRecommended = () => {
+    if (!tuneResult?.recommended) return;
+    localStorage.setItem('fluxchess_physics_params', JSON.stringify(tuneResult.recommended));
+    onStatus("Recommended params saved — enable Physics in Hexapawn widget");
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, height: "100%" }}>
 
@@ -106,6 +148,9 @@ export default function CalibrationWidget({ onStatus }: WidgetProps) {
               </button>
               <button onClick={fetchCalData} style={{ ...btnStyle, background: "#2a2a4a", border: "1px solid #3a3a5a", flex: 1 }}>
                 View Stored
+              </button>
+              <button onClick={startTuning} style={{ ...btnStyle, background: "#1a237e", flex: 1 }}>
+                Tune Physics
               </button>
             </div>
           </div>
@@ -171,6 +216,29 @@ export default function CalibrationWidget({ onStatus }: WidgetProps) {
             </>
           )}
         </>
+      )}
+
+      {tuneStep === "running" && (
+        <div style={{ background: "#0a0a1a", border: "1px solid #2a2a4a", borderRadius: 6, padding: 8, fontSize: 11, fontFamily: "monospace", color: "#8f8", maxHeight: 300, overflow: "auto", userSelect: "text", cursor: "text" }}>
+          {tuneLogs.length === 0 ? <div style={{ color: "#888" }}>Waiting for tuning data...</div> : null}
+          {tuneLogs.map((line, i) => <div key={i}>{line}</div>)}
+        </div>
+      )}
+
+      {tuneStep === "done" && tuneResult && (
+        <div style={{ background: "#151525", padding: 12, borderRadius: 8, border: "1px solid #2a2a4a" }}>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Tuning Results</div>
+          {tuneResult.verification && (
+            <div style={{ marginBottom: 8, fontSize: 12, color: tuneResult.verification.success_count >= 3 ? "#4caf50" : "#ef5350" }}>
+              Verification: {tuneResult.verification.success_count}/{tuneResult.verification.total} moves succeeded
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={applyRecommended} style={{ ...btnStyle, flex: 1 }}>Apply Recommended</button>
+            <button onClick={() => { const blob = new Blob([JSON.stringify(tuneResult, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `tune-${Date.now()}.json`; a.click(); URL.revokeObjectURL(url); }} style={{ ...btnStyle, background: "#2a2a4a", border: "1px solid #3a3a5a", flex: 1 }}>Download JSON</button>
+            <button onClick={() => { setTuneStep("idle"); setTuneLogs([]); setTuneResult(null); }} style={{ ...btnStyle, background: "#2a2a4a", border: "1px solid #3a3a5a", flex: 1 }}>Reset</button>
+          </div>
+        </div>
       )}
     </div>
   );
