@@ -34,8 +34,11 @@ struct PhysicsParams {
   float target_velocity;  // desired max speed (grid-units/sec)
   float target_accel;     // max acceleration (grid-units/sec^2)
 
-  // Sensor
-  float sensor_threshold; // reading must be this many units below baseline to count
+  // Sensor distance model: strength = sensor_k / (d^sensor_falloff + epsilon)
+  // Inverted to estimate d from reading: d = ((sensor_k / strength) - epsilon) ^ (1/sensor_falloff)
+  float sensor_k;         // sensor strength constant
+  float sensor_falloff;   // sensor distance falloff exponent
+  float sensor_threshold; // min (baseline - reading) to activate correction
 
   // Safety
   uint16_t max_duration_ms; // timeout for entire move
@@ -86,13 +89,26 @@ No fixed tick rate. Each iteration measures actual elapsed time via `micros()`. 
 
 Each sensor covers a 3x3 block centered at `(col*3, row*3)`. When a sensor reading drops below `baseline - sensor_threshold`:
 
+**Position correction:**
+
+The sensor strength (`baseline - reading`) maps to distance from sensor center using the same model shape as the coil force, inverted:
+
 ```
-reading_ratio = (baseline - reading) / (baseline - piece_mean)
+strength = baseline - reading
+d = ((sensor_k / strength) - epsilon) ^ (1.0 / sensor_falloff)
 ```
 
-- `reading_ratio` ranges from 0.0 (just entered zone) to 1.0 (centered on sensor)
-- **Parallel axis (direction of motion)**: estimate position as `sensor_center - (1.0 - reading_ratio) * 1.5 * direction`. Snap the parallel component to this estimate.
-- **Perpendicular axis**: keep the simulation estimate unchanged (coil alignment keeps it on track)
+At d=0, the reading equals `piece_mean` (calibrated). The estimated distance is applied along the movement axis only — the perpendicular axis keeps its simulation estimate (coil alignment keeps it on track).
+
+**Velocity correction:**
+
+On successive ticks where the sensor is active, the position estimates yield a sensor-derived velocity: `v_sensor = (pos_now - pos_prev) / dt`. This is blended into the simulation velocity:
+
+```
+v = v_sim * (1 - SENSOR_VELOCITY_WEIGHT) + v_sensor * SENSOR_VELOCITY_WEIGHT
+```
+
+`SENSOR_VELOCITY_WEIGHT` is a firmware constant in `physics.h` (not a tunable param). Once the piece leaves the sensor zone, the simulation continues with the corrected velocity.
 
 Correction only applies when:
 - Reading is meaningfully below baseline (exceeds `sensor_threshold`)
@@ -165,6 +181,8 @@ When the piece reaches the final coil in the path:
 | friction_kinetic | TBD (tune empirically) | Viscous damping coefficient |
 | target_velocity | 3.0 | Max speed in grid-units/sec |
 | target_accel | 10.0 | Max acceleration |
+| sensor_k | TBD (tune empirically) | Sensor strength constant |
+| sensor_falloff | 2.0 | Sensor distance falloff exponent |
 | sensor_threshold | 50.0 | ADC units below baseline to trigger |
 | max_duration_ms | 5000 | Move timeout |
 
