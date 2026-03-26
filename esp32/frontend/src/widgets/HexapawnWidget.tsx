@@ -1,198 +1,187 @@
-import { useState } from "react";
-import { type WidgetProps, btnStyle } from "./shared";
+import { useState, useEffect } from "react";
+import { getBoardState, moveDumb, movePhysics, type GetBoardStateResponse } from "../generated/api";
+import { type WidgetProps, btnStyle, inputStyle, labelStyle } from "./shared";
 
-type Player = "W" | "B";
-type Piece = Player | null;
-type Position = { x: number; y: number };
+const PIECE_NONE = 0;
+const PIECE_WHITE = 1;
+const PIECE_BLACK = 2;
 
-// Initial 3x3 Hexapawn board
-// Row 0 (Top): Black Pawns
-// Row 1 (Mid): Empty
-// Row 2 (Bot): White Pawns
-const INITIAL_BOARD: Piece[][] = [
-  ["B", "B", "B"],
-  [null, null, null],
-  ["W", "W", "W"],
-];
+const MAJOR_COLS = [0, 3, 6];
+const MAJOR_ROWS = [0, 3, 6];
+const GRAVE_COL = 9;
+const ALL_COLS = [...MAJOR_COLS, GRAVE_COL];
+
+type Pos = { x: number; y: number };
+
+const DEFAULT_PHYSICS_PARAMS = {
+  force_k: 5.0,
+  force_epsilon: 0.5,
+  falloff_exp: 2.0,
+  voltage_scale: 1.0,
+  friction_static: 1.0,
+  friction_kinetic: 3.0,
+  target_velocity: 3.0,
+  target_accel: 10.0,
+  sensor_k: 500.0,
+  sensor_falloff: 2.0,
+  sensor_threshold: 50.0,
+  max_duration_ms: 5000,
+};
+
+function defaultPieces(): number[][] {
+  const grid: number[][] = Array.from({ length: 10 }, () => Array(7).fill(PIECE_NONE));
+  grid[0][0] = PIECE_WHITE; grid[3][0] = PIECE_WHITE; grid[6][0] = PIECE_WHITE;
+  grid[0][6] = PIECE_BLACK; grid[3][6] = PIECE_BLACK; grid[6][6] = PIECE_BLACK;
+  return grid;
+}
 
 export default function HexapawnWidget({ onStatus }: WidgetProps) {
-  const [board, setBoard] = useState<Piece[][]>(INITIAL_BOARD);
-  const [turn, setTurn] = useState<Player>("W");
-  const [selected, setSelected] = useState<Position | null>(null);
-  const [winner, setWinner] = useState<Player | "Draw" | null>(null);
+  const [boardState, setBoardState] = useState<GetBoardStateResponse | null>(null);
+  const [selected, setSelected] = useState<Pos | null>(null);
   const [isMoving, setIsMoving] = useState(false);
+  const [usePhysics, setUsePhysics] = useState(false);
+  const [showParams, setShowParams] = useState(false);
+  const [physicsParams, setPhysicsParams] = useState(DEFAULT_PHYSICS_PARAMS);
 
-  const resetGame = async () => {
-    setBoard(INITIAL_BOARD);
-    setTurn("W");
-    setSelected(null);
-    setWinner(null);
-    // TODO: Have a reset call in here
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    onStatus("Hexapawn reset. White's turn.");
+  const fetchBoard = async () => {
+    try {
+      const res = await getBoardState();
+      setBoardState(res);
+    } catch {
+      if (!boardState) {
+        setBoardState({ raw_strengths: [], pieces: defaultPieces() });
+      }
+    }
   };
 
-  const getValidMoves = (player: Player, piecePos: Position, currentBoard: Piece[][]): Position[] => {
-    const moves: Position[] = [];
-    const dir = player === "W" ? -1 : 1; // White moves UP (-y), Black moves DOWN (+y)
-    const forwardY = piecePos.y + dir;
+  useEffect(() => { fetchBoard(); }, []);
 
-    if (forwardY >= 0 && forwardY <= 2) {
-      // Forward move (must be empty)
-      if (currentBoard[forwardY][piecePos.x] === null) {
-        moves.push({ x: piecePos.x, y: forwardY });
-      }
-      // Diagonal captures (must contain opponent)
-      const opponent = player === "W" ? "B" : "W";
-      if (piecePos.x > 0 && currentBoard[forwardY][piecePos.x - 1] === opponent) {
-        moves.push({ x: piecePos.x - 1, y: forwardY });
-      }
-      if (piecePos.x < 2 && currentBoard[forwardY][piecePos.x + 1] === opponent) {
-        moves.push({ x: piecePos.x + 1, y: forwardY });
-      }
-    }
-    return moves;
+  const pieces = boardState?.pieces;
+
+  const getPiece = (x: number, y: number): number => {
+    if (!pieces || x >= pieces.length || y >= pieces[0].length) return PIECE_NONE;
+    return pieces[x][y];
   };
 
-  const executeMove = async (from: Position, to: Position) => {
-    setIsMoving(true);
-    onStatus(`Moving ${turn} pawn from (${from.x},${from.y}) to (${to.x},${to.y})...`);
+  const handleClick = async (x: number, y: number) => {
+    if (isMoving || !pieces) return;
 
-    // TODO: Replace this mock delay with actual API calls to the ESP32
-    // e.g., await movePieceOnBoard(from, to);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    // Update board state
-    const newBoard = board.map(row => [...row]);
-    newBoard[to.y][to.x] = newBoard[from.y][from.x];
-    newBoard[from.y][from.x] = null;
-    
-    setBoard(newBoard);
-    setSelected(null);
-    setIsMoving(false);
-
-    // Check Win Conditions
-    const nextPlayer = turn === "W" ? "B" : "W";
-    
-    // Condition 1: Reached the opposite end
-    if (to.y === (turn === "W" ? 0 : 2)) {
-      setWinner(turn);
-      onStatus(`${turn === "W" ? "White" : "Black"} wins by reaching the end!`);
-      return;
-    }
-
-    // Condition 2: Opponent has no valid moves left or no pieces left
-    let opponentHasMoves = false;
-    for (let y = 0; y < 3; y++) {
-      for (let x = 0; x < 3; x++) {
-        if (newBoard[y][x] === nextPlayer) {
-          if (getValidMoves(nextPlayer, { x, y }, newBoard).length > 0) {
-            opponentHasMoves = true;
-          }
-        }
-      }
-    }
-
-    if (!opponentHasMoves) {
-      setWinner(turn);
-      onStatus(`${turn === "W" ? "White" : "Black"} wins! Opponent has no valid moves.`);
-      return;
-    }
-
-    setTurn(nextPlayer);
-    onStatus(`${nextPlayer === "W" ? "White" : "Black"}'s turn.`);
-  };
-
-  const handleSquareClick = (x: number, y: number) => {
-    if (winner || isMoving) return;
-
-    const clickedPiece = board[y][x];
-
-    // If we click our own piece, select it
-    if (clickedPiece === turn) {
-      setSelected({ x, y });
-      return;
-    }
-
-    // If we have a piece selected, check if this is a valid move
     if (selected) {
-      const validMoves = getValidMoves(turn, selected, board);
-      const isValid = validMoves.some(m => m.x === x && m.y === y);
-      
-      if (isValid) {
-        executeMove(selected, { x, y });
-      } else {
-        setSelected(null); // Clicked an invalid square, deselect
+      if (selected.x === x && selected.y === y) {
+        setSelected(null);
+        return;
       }
+
+      setIsMoving(true);
+      const mode = usePhysics ? "physics" : "dumb";
+      onStatus(`Moving ${mode} (${selected.x},${selected.y}) → (${x},${y})...`);
+
+      try {
+        const moveParams = { from_x: selected.x, from_y: selected.y, to_x: x, to_y: y };
+        const res = usePhysics
+          ? await movePhysics({ ...moveParams, ...physicsParams })
+          : await moveDumb(moveParams);
+        if (res.success) {
+          onStatus(`Moved to (${x},${y})`);
+        } else {
+          onStatus(`Move failed: ${res.error}`);
+        }
+      } catch (e) {
+        onStatus(`Error: ${e}`);
+      }
+
+      await fetchBoard();
+      setSelected(null);
+      setIsMoving(false);
+      return;
+    }
+
+    if (getPiece(x, y) !== PIECE_NONE) {
+      setSelected({ x, y });
     }
   };
 
-  // UI Helpers
-  const isSelected = (x: number, y: number) => selected?.x === x && selected?.y === y;
-  const isValidTarget = (x: number, y: number) => {
-    if (!selected) return false;
-    return getValidMoves(turn, selected, board).some(m => m.x === x && m.y === y);
+  const updateParam = (key: keyof typeof physicsParams, val: string) => {
+    setPhysicsParams(p => ({ ...p, [key]: parseFloat(val) || 0 }));
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", alignItems: "center" }}>
-      
-      {/* Game Status Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", width: "100%", maxWidth: 300, marginBottom: 16, alignItems: "center" }}>
-        <div style={{ fontSize: 16, fontWeight: "bold", color: winner ? "#4caf50" : "#fff" }}>
-          {winner ? `${winner === "W" ? "White" : "Black"} Wins!` : `${turn === "W" ? "White" : "Black"}'s Turn`}
+
+      <div style={{ display: "flex", justifyContent: "space-between", width: "100%", maxWidth: 400, marginBottom: 8, alignItems: "center", gap: 8 }}>
+        <div style={{ fontSize: 13, color: "#888", flex: 1 }}>
+          {selected ? `(${selected.x},${selected.y}) → click dest` : "Click piece"}
         </div>
-        <button onClick={resetGame} disabled={isMoving} style={{ ...btnStyle, background: "#b71c1c", padding: "4px 10px", fontSize: 11 }}>
-          Reset Board
-        </button>
+        <label style={{ ...labelStyle, cursor: "pointer" }}>
+          <input type="checkbox" checked={usePhysics} onChange={e => setUsePhysics(e.target.checked)} />
+          Physics
+        </label>
+        {usePhysics && (
+          <button style={{ ...btnStyle, fontSize: 11, padding: "3px 8px", background: "#2a2a4a", border: "1px solid #3a3a5a" }}
+            onClick={() => setShowParams(v => !v)}>
+            {showParams ? "Hide" : "Tune"}
+          </button>
+        )}
+        <button style={btnStyle} onClick={fetchBoard}>Refresh</button>
       </div>
 
-      {/* 3x3 Board */}
-      <div style={{ 
-        display: "grid", 
-        gridTemplateColumns: "repeat(3, 1fr)", 
-        gap: 4, 
-        background: "#333", 
-        padding: 4, 
-        borderRadius: 8,
-        opacity: isMoving ? 0.6 : 1,
-        pointerEvents: isMoving ? "none" : "auto"
+      {usePhysics && showParams && (
+        <div style={{
+          display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 12px",
+          width: "100%", maxWidth: 400, marginBottom: 8,
+          background: "#151525", padding: 10, borderRadius: 6, border: "1px solid #2a2a4a",
+        }}>
+          {(Object.keys(DEFAULT_PHYSICS_PARAMS) as (keyof typeof DEFAULT_PHYSICS_PARAMS)[]).map(key => (
+            <label key={key} style={labelStyle}>
+              {key.replace(/_/g, " ")}
+              <input
+                type="number"
+                step={key === 'max_duration_ms' ? 1 : 0.1}
+                value={physicsParams[key]}
+                onChange={e => updateParam(key, e.target.value)}
+                style={{ ...inputStyle, width: 70 }}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(4, 70px)`,
+        gridTemplateRows: `repeat(3, 70px)`,
+        gap: 4, background: "#222", padding: 6, borderRadius: 8,
       }}>
-        {board.map((row, y) => row.map((piece, x) => {
-          const isDarkSquare = (x + y) % 2 === 1;
-          const bg = isDarkSquare ? "#3a5a7c" : "#D7BA89";
-          const highlight = isSelected(x, y) ? "inset 0 0 0 4px #f57f17" : 
-                            isValidTarget(x, y) ? "inset 0 0 0 4px #81c784" : "none";
-          
-          return (
-            <div 
-              key={`${x}-${y}`}
-              onClick={() => handleSquareClick(x, y)}
-              style={{
-                width: 60,
-                height: 60,
-                background: bg,
-                boxShadow: highlight,
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                fontSize: 40,
-                cursor: "pointer",
-                userSelect: "none",
-                borderRadius: 2,
-                transition: "box-shadow 0.2s"
-              }}
-            >
-              {piece === "W" ? "♙" : piece === "B" ? "♟" : ""}
-            </div>
-          );
-        }))}
-      </div>
+        {MAJOR_ROWS.slice().reverse().map((gy) =>
+          ALL_COLS.map((gx) => {
+            const piece = getPiece(gx, gy);
+            const isSel = selected?.x === gx && selected?.y === gy;
+            const isGrave = gx === GRAVE_COL;
+            const isDark = ((gx / 3) + (gy / 3)) % 2 === 1;
 
-      {/* Instructions */}
-      <div style={{ marginTop: 16, fontSize: 11, color: "#888", textAlign: "center", maxWidth: 300 }}>
-        Pawns move straight forward 1 square into empty space, or diagonally 1 square to capture. Win by reaching the other side or blocking your opponent!
+            return (
+              <div
+                key={`${gx}-${gy}`}
+                onClick={() => handleClick(gx, gy)}
+                style={{
+                  width: 70, height: 70,
+                  background: isGrave ? "#1a1a2e" : isDark ? "#3a5a7c" : "#D7BA89",
+                  border: isGrave ? "2px dashed #333" : "none",
+                  boxShadow: isSel ? "inset 0 0 0 4px #f57f17" : "none",
+                  display: "flex", justifyContent: "center", alignItems: "center",
+                  fontSize: 44,
+                  color: piece === PIECE_BLACK ? "#333" : "#fff",
+                  WebkitTextStroke: piece !== PIECE_NONE ? "1px #888" : undefined,
+                  cursor: isMoving ? "default" : "pointer",
+                  userSelect: "none", borderRadius: 4,
+                  opacity: isMoving ? 0.6 : isGrave ? 0.7 : 1,
+                }}
+              >
+                {piece === PIECE_WHITE ? "♟" : piece === PIECE_BLACK ? "♟" : ""}
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );

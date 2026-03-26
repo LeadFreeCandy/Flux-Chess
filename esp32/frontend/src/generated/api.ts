@@ -1,12 +1,19 @@
-// Synced with C++ firmware api.h
+// AUTO-GENERATED from firmware/api.h — do not edit
+// Run: python codegen/generate.py
+
 import { transport } from "../transport";
 
-// ── Piece Constants ───────────────────────────────────────────
-export const PIECE_NONE = 0;
-export const PIECE_WHITE = 1;
-export const PIECE_BLACK = 2;
+export interface Position {
+  x: number;
+  y: number;
+}
 
-// ── Types ─────────────────────────────────────────────────────
+export interface PiecePosition {
+  piece_id: number;
+  pos: Position;
+}
+
+export type ShutdownRequest = Record<string, never>;
 
 export interface PulseCoilRequest {
   x: number;
@@ -14,9 +21,19 @@ export interface PulseCoilRequest {
   duration_ms: number;
 }
 
+export type GetBoardStateRequest = Record<string, never>;
+
+export interface SetRGBRequest {
+  r: number;
+  g: number;
+  b: number;
+}
+
+export type ShutdownResponse = Record<string, never>;
+
 export interface PulseCoilResponse {
   success: boolean;
-  error: string;
+  error: any;
 }
 
 export interface GetBoardStateResponse {
@@ -24,22 +41,58 @@ export interface GetBoardStateResponse {
   pieces: number[][];
 }
 
-export type MoveError = "NONE" | "OUT_OF_BOUNDS" | "SAME_POSITION" | "NOT_ORTHOGONAL" | "NO_PIECE_AT_SOURCE" | "PATH_BLOCKED" | "COIL_FAILURE";
-
-export interface MoveResult {
-  success: boolean;
-  error: MoveError;
-}
-
 export interface SetRGBResponse {
   success: boolean;
 }
 
-export interface CommandResult {
+export interface SetPieceRequest {
+  x: number;
+  y: number;
+  id: number;
+}
+
+export type CalibrateRequest = Record<string, never>;
+
+export interface CalibrateResponse {
   success: boolean;
 }
 
-// ── Command Registry ──────────────────────────────────────────
+export type GetCalibrationRequest = Record<string, never>;
+
+export interface GetCalibrationResponse {
+  data: string;
+}
+
+export interface MoveDumbRequest {
+  from_x: number;
+  from_y: number;
+  to_x: number;
+  to_y: number;
+}
+
+export interface MoveResponse {
+  success: boolean;
+  error: any;
+}
+
+export interface MovePhysicsRequest {
+  from_x: number;
+  from_y: number;
+  to_x: number;
+  to_y: number;
+  force_k: number;
+  force_epsilon: number;
+  falloff_exp: number;
+  voltage_scale: number;
+  friction_static: number;
+  friction_kinetic: number;
+  target_velocity: number;
+  target_accel: number;
+  sensor_k: number;
+  sensor_falloff: number;
+  sensor_threshold: number;
+  max_duration_ms: number;
+}
 
 export const commands = {
   shutdown: { method: "POST", path: "/api/shutdown" },
@@ -48,11 +101,12 @@ export const commands = {
   set_rgb: { method: "POST", path: "/api/set_rgb" },
   set_piece: { method: "POST", path: "/api/set_piece" },
   move_dumb: { method: "POST", path: "/api/move_dumb" },
+  move_physics: { method: "POST", path: "/api/move_physics" },
+  calibrate: { method: "POST", path: "/api/calibrate" },
+  get_calibration: { method: "GET", path: "/api/calibration" },
 } as const;
 
-// ── API Functions ─────────────────────────────────────────────
-
-export function shutdown(): Promise<CommandResult> {
+export function shutdown(): Promise<ShutdownResponse> {
   return transport.call("shutdown", {});
 }
 
@@ -64,15 +118,26 @@ export function getBoardState(): Promise<GetBoardStateResponse> {
   return transport.call("get_board_state", {});
 }
 
-export function setRgb(params: { r: number; g: number; b: number }): Promise<SetRGBResponse> {
+export function setRgb(params: SetRGBRequest): Promise<SetRGBResponse> {
   return transport.call("set_rgb", params);
 }
 
-export function setPiece(params: { x: number; y: number; id: number }): Promise<CommandResult> {
+export function setPiece(params: SetPieceRequest): Promise<SetRGBResponse> {
   return transport.call("set_piece", params);
 }
 
-export function moveDumb(params: { from_x: number; from_y: number; to_x: number; to_y: number }): Promise<MoveResult> {
+export function moveDumb(params: MoveDumbRequest): Promise<MoveResponse> {
   return transport.call("move_dumb", params);
 }
 
+export function movePhysics(params: MovePhysicsRequest): Promise<MoveResponse> {
+  return transport.call("move_physics", params);
+}
+
+export function calibrate(): Promise<CalibrateResponse> {
+  return transport.call("calibrate", {});
+}
+
+export function getCalibration(): Promise<GetCalibrationResponse> {
+  return transport.call("get_calibration", {});
+}
