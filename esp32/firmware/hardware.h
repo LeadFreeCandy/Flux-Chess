@@ -120,57 +120,6 @@ public:
     return true;
   }
 
-  // Pulse a coil until sensor exits a threshold band.
-  // Keeps coil on while: threshold_low <= reading <= threshold_high.
-  // Returns true if sensor exited the band, false on timeout.
-  struct PulseResult {
-    bool triggered;     // sensor exited threshold band
-    uint16_t elapsed_ms;
-    uint16_t last_reading;
-  };
-
-  PulseResult pulseUntilSensor(
-      uint8_t coil_bit, uint8_t sensor_idx,
-      float threshold_low, float threshold_high,
-      uint16_t max_ms, uint8_t pwm_duty = 255)
-  {
-    PulseResult result = { false, 0, 0 };
-
-    if (!validateBit(coil_bit)) return result;
-
-    float heat = decayHeat(coil_bit);
-    if (heat + max_ms > THERMAL_MAX_HEAT_MS) {
-      LOG_HW("pulseUntilSensor REJECT: bit %d thermal (heat=%.0f, max=%d)",
-             coil_bit, heat, max_ms);
-      return result;
-    }
-
-    srSetBit(coil_bit, true);
-    srSetPWM(pwm_duty);
-
-    unsigned long t0 = millis();
-
-    while (millis() - t0 < max_ms) {
-      delay(5);
-      uint16_t reading = readSensor(sensor_idx);
-      result.last_reading = reading;
-
-      if (reading < threshold_low || reading > threshold_high) {
-        result.triggered = true;
-        break;
-      }
-    }
-
-    srSetPWM(0);
-    srSetBit(coil_bit, false);
-
-    result.elapsed_ms = (uint16_t)(millis() - t0);
-    heat_ms_[coil_bit] = heat + result.elapsed_ms * (pwm_duty / 255.0f);
-    heat_updated_[coil_bit] = millis();
-
-    return result;
-  }
-
   // ── RGB LED ────────────────────────────────────────────────
 
   void setRGB(uint8_t r, uint8_t g, uint8_t b) {

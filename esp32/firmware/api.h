@@ -94,9 +94,53 @@ struct SetRGBResponse {
   String toJson() const { return Json().add("success", success).build(); }
 };
 
+// Piece constants
+constexpr uint8_t PIECE_NONE = 0;
+constexpr uint8_t PIECE_WHITE = 1;
+constexpr uint8_t PIECE_BLACK = 2;
+
+struct SetPieceRequest {
+  uint8_t x;
+  uint8_t y;
+  uint8_t id;
+};
+
+struct CalibrateRequest {};
+
+struct CalibrateResponse {
+  bool success;
+  String toJson() const { return Json().add("success", success).build(); }
+};
+
+struct GetCalibrationRequest {};
+
+struct GetCalibrationResponse {
+  String data;
+  String toJson() const { return data; }
+};
+
+FLUX_ENUM(MoveError, NONE, OUT_OF_BOUNDS, SAME_POSITION, NOT_ORTHOGONAL, NO_PIECE_AT_SOURCE, PATH_BLOCKED, COIL_FAILURE)
+
+struct MoveDumbRequest {
+  uint8_t from_x;
+  uint8_t from_y;
+  uint8_t to_x;
+  uint8_t to_y;
+};
+
+struct MoveResponse {
+  bool success;
+  MoveError error;
+  String toJson() const { return Json().add("success", success).add("error", ::toJson(error)).build(); }
+};
+
 // ── Command Table ─────────────────────────────────────────────
 // Parsed by codegen/generate.py — do not change format
 // API_COMMAND(shutdown, POST, /api/shutdown, ShutdownRequest, ShutdownResponse)
 // API_COMMAND(pulse_coil, POST, /api/pulse_coil, PulseCoilRequest, PulseCoilResponse)
 // API_COMMAND(get_board_state, GET, /api/board_state, GetBoardStateRequest, GetBoardStateResponse)
 // API_COMMAND(set_rgb, POST, /api/set_rgb, SetRGBRequest, SetRGBResponse)
+// API_COMMAND(set_piece, POST, /api/set_piece, SetPieceRequest, SetRGBResponse)
+// API_COMMAND(move_dumb, POST, /api/move_dumb, MoveDumbRequest, MoveResponse)
+// API_COMMAND(calibrate, POST, /api/calibrate, CalibrateRequest, CalibrateResponse)
+// API_COMMAND(get_calibration, GET, /api/calibration, GetCalibrationRequest, GetCalibrationResponse)

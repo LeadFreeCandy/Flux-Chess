@@ -1,3 +1,9 @@
+// Board is the game-logic layer. It must NOT directly manipulate shift registers,
+// OE, or PWM. All coil actuation goes through Hardware's safe public API:
+//   pulseBit()      — fixed-duration pulse with thermal protection
+//   sustainCoil()   — sustain active coil without SPI writes
+// Hardware encapsulates all dangerous SR/OE/PWM operations as private.
+
 #pragma once
 #include "api.h"
 #include "hardware.h"
@@ -8,11 +14,9 @@
 #define PIECE_BLACK 2
 
 // Move parameters
-#define MOVE_PULSE_MS       250
-#define MOVE_DELAY_MS       10
+#define MOVE_PULSE_MS       350
+#define MOVE_DELAY_MS       0
 #define MOVE_PULSE_REPEATS  1
-
-FLUX_ENUM(MoveError, NONE, OUT_OF_BOUNDS, SAME_POSITION, NOT_ORTHOGONAL, NO_PIECE_AT_SOURCE, PATH_BLOCKED, COIL_FAILURE)
 
 class Board {
 public:
@@ -35,72 +39,56 @@ public:
   // ── Dumb Orthogonal Move ────────────────────────────────────
   // Validates the move, then pulses coils along the path.
 
-  MoveError moveDumbOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
-    LOG_BOARD("moveDumbOrthogonal: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
+  MoveError moveDumbOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY, bool skipValidation = false) {
+    LOG_BOARD("moveDumbOrthogonal: (%d,%d) -> (%d,%d) skip=%d", fromX, fromY, toX, toY, skipValidation);
 
-    // Bounds
+    // Bounds check always applies
     if (fromX >= GRID_COLS || fromY >= GRID_ROWS || toX >= GRID_COLS || toY >= GRID_ROWS) {
       return MoveError::OUT_OF_BOUNDS;
     }
 
-    // Same position
     if (fromX == toX && fromY == toY) {
       return MoveError::SAME_POSITION;
     }
 
-    // Must be orthogonal (one axis must match)
     if (fromX != toX && fromY != toY) {
       return MoveError::NOT_ORTHOGONAL;
     }
 
-    // Must have a piece at source
-    if (getPiece(fromX, fromY) == PIECE_NONE) {
-      return MoveError::NO_PIECE_AT_SOURCE;
-    }
-
-    // Check path is clear (no pieces between source and destination, exclusive)
-    int8_t dx = 0, dy = 0;
-    if (toX > fromX) dx = 1;
-    else if (toX < fromX) dx = -1;
-    if (toY > fromY) dy = 1;
-    else if (toY < fromY) dy = -1;
-
-    int8_t cx = fromX + dx, cy = fromY + dy;
-    while (cx != toX || cy != toY) {
-      if (getPiece(cx, cy) != PIECE_NONE) {
-        LOG_BOARD("moveDumbOrthogonal REJECT: path blocked at (%d,%d)", cx, cy);
-        return MoveError::PATH_BLOCKED;
+    if (!skipValidation) {
+      if (getPiece(fromX, fromY) == PIECE_NONE) {
+        return MoveError::NO_PIECE_AT_SOURCE;
       }
-      cx += dx;
-      cy += dy;
-    }
-    // Destination can be occupied (capture) — caller handles that via set_piece
 
-    // Determine step size for coil pulsing (step by 3 on major grid, 1 otherwise)
-    int8_t stepX = 0, stepY = 0;
-    if (toX > fromX) stepX = (fromX % 3 == 0 && toX % 3 == 0) ? 3 : 1;
-    else if (toX < fromX) stepX = (fromX % 3 == 0 && toX % 3 == 0) ? -3 : -1;
-    if (toY > fromY) stepY = (fromY % 3 == 0 && toY % 3 == 0) ? 3 : 1;
-    else if (toY < fromY) stepY = (fromY % 3 == 0 && toY % 3 == 0) ? -3 : -1;
+      int8_t dx = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
+      int8_t dy = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
+      int8_t cx = fromX + dx, cy = fromY + dy;
+      while (cx != toX || cy != toY) {
+        if (getPiece(cx, cy) != PIECE_NONE) {
+          LOG_BOARD("moveDumbOrthogonal REJECT: path blocked at (%d,%d)", cx, cy);
+          return MoveError::PATH_BLOCKED;
+        }
+        cx += dx;
+        cy += dy;
+      }
+    }
 
     // Pulse coils along the path
+    int8_t stepX = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
+    int8_t stepY = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
     uint8_t piece = pieces_[fromX][fromY];
-    cx = fromX;
-    cy = fromY;
+    int8_t cx = fromX, cy = fromY;
 
     while (cx != toX || cy != toY) {
       cx += stepX;
       cy += stepY;
 
       int8_t bit = coordToBit(cx, cy);
-      if (bit < 0) {
-        LOG_BOARD("moveDumbOrthogonal ABORT: no coil at (%d,%d)", cx, cy);
-        return MoveError::COIL_FAILURE;
-      }
-
+      LOG_BOARD("moveDumbOrthogonal: pulsing (%d,%d) bit=%d for %dms", cx, cy, bit, MOVE_PULSE_MS);
       for (int r = 0; r < MOVE_PULSE_REPEATS; r++) {
-        if (!hw_.pulseBit((uint8_t)bit, MOVE_PULSE_MS)) {
-          LOG_BOARD("moveDumbOrthogonal ABORT: pulse failed at (%d,%d)", cx, cy);
+        PulseCoilResponse res = pulseCoil(cx, cy, MOVE_PULSE_MS);
+        if (!res.success) {
+          LOG_BOARD("moveDumbOrthogonal ABORT: pulse failed at (%d,%d), error=%d", cx, cy, (int)res.error);
           return MoveError::COIL_FAILURE;
         }
         if (r < MOVE_PULSE_REPEATS - 1) delay(MOVE_DELAY_MS);
@@ -113,6 +101,66 @@ public:
     pieces_[toX][toY] = piece;
     LOG_BOARD("moveDumbOrthogonal OK: piece %d now at (%d,%d)", piece, toX, toY);
     return MoveError::NONE;
+  }
+
+  // ── Calibration ─────────────────────────────────────────────
+
+  static constexpr int CAL_BASELINE_SAMPLES = 10000;
+  static constexpr int CAL_PIECE_REPEATS = 5;
+  static constexpr int CAL_SETTLE_MS = 250;
+
+  CalibrateResponse calibrate() {
+    LOG_BOARD("CAL: start");
+    memset(&cal_data_, 0, sizeof(cal_data_));
+    memset(pieces_, PIECE_NONE, sizeof(pieces_));
+    pieces_[0][0] = PIECE_WHITE;
+
+    // Sweep pieces to origin
+    if (!calMove(9,6,9,0) || !calMove(6,6,6,0) || !calMove(3,6,3,0) ||
+        !calMove(0,6,0,0) || !calMove(9,0,0,0)) return { false };
+
+    // Phase 1: baselines (no piece nearby)
+    LOG_BOARD("CAL: baselines - right half (piece at 0,0)");
+    calMeasureHalf(2, 3);
+
+    LOG_BOARD("CAL: moving piece (0,0) -> (6,0)");
+    if (!calMove(0,0,6,0)) return { false };
+
+    LOG_BOARD("CAL: baselines - left half (piece at 6,0)");
+    calMeasureHalf(0, 1);
+
+    // Phase 2: jiggle-measure each sensor with piece
+    LOG_BOARD("CAL: phase2 - with piece");
+    uint8_t px = 6, py = 0;
+
+    for (int row = 0; row < (int)SR_ROWS; row++) {
+      for (int ci = 0; ci < (int)SR_COLS; ci++) {
+        int col = (row % 2 == 0) ? ci : ((int)SR_COLS - 1 - ci);
+        uint8_t tx = col * SR_BLOCK;
+        uint8_t ty = row * SR_BLOCK;
+
+        if (!calMove(px, py, tx, ty)) return { false };
+        px = tx; py = ty;
+
+        uint8_t si = col * SR_ROWS + (SR_ROWS - 1 - row);
+        auto& cs = cal_data_.sensors[si];
+        calJiggleMeasure(tx, ty, si, cs.piece_mean, cs.piece_stddev, cs.piece_median);
+        LOG_BOARD("CAL: piece sensor %d (%d,%d): mean=%.1f stddev=%.2f median=%d",
+                  si, tx, ty, cs.piece_mean, cs.piece_stddev, cs.piece_median);
+      }
+    }
+
+    // Phase 3: validation - zig-zag across board
+    LOG_BOARD("CAL: phase3 - validation");
+    memset(cal_data_.detections, 0, sizeof(cal_data_.detections));
+
+    if (!calMove(px, py, 9, 6)) return { false };
+    if (!calValidatePass()) return { false };
+
+    cal_data_.valid = true;
+    LOG_BOARD("CAL: complete");
+    initDefaultBoard();
+    return { true };
   }
 
   // ── Coil Control ──────────────────────────────────────────
@@ -137,9 +185,11 @@ public:
 
     uint16_t raw[NUM_HALL_SENSORS];
     hw_.readAllSensors(raw, NUM_HALL_SENSORS);
+    // Sensors 0-11 map column-major with inverted rows:
+    // sensor i → sr_col = i/3, physical row = (2 - i%3)
     for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      int col = i % SENSOR_COLS;
-      int row = i / SENSOR_COLS;
+      int col = i / SR_ROWS;
+      int row = (SR_ROWS - 1) - (i % SR_ROWS);
       res.raw_strengths[col][row] = raw[i];
     }
 
@@ -152,9 +202,30 @@ public:
   SetRGBResponse setRGB(uint8_t r, uint8_t g, uint8_t b) { hw_.setRGB(r, g, b); return { true }; }
   void shutdown() { hw_.shutdown(); }
 
+  // ── Calibration Data Access ─────────────────────────────────
+
+  struct CalSensor {
+    float baseline_mean;
+    float baseline_stddev;
+    float piece_mean;
+    float piece_stddev;
+    uint16_t piece_median;
+  };
+
+  struct CalData {
+    bool valid = false;
+    CalSensor sensors[NUM_HALL_SENSORS];
+    uint8_t detections[SENSOR_COLS][SENSOR_ROWS]; // 0, 1, or 2 from validation passes
+  };
+
+  GetCalibrationResponse getCalibration() {
+    return { calDataToJson() };
+  }
+
 private:
   Hardware hw_;
   uint8_t pieces_[GRID_COLS][GRID_ROWS];
+  CalData cal_data_;
 
   // ── Default Board ───────────────────────────────────────────
   // 3 white on bottom row, 3 black on top row
@@ -174,6 +245,159 @@ private:
     pieces_[6][6] = PIECE_BLACK;
 
     LOG_BOARD("initDefaultBoard: 3 white at y=0, 3 black at y=6");
+  }
+
+  // ── Calibration Helpers ──────────────────────────────────────
+
+  // Baseline: 10k samples, mean + stddev
+  void calMeasureBaseline(uint8_t si, float& out_mean, float& out_stddev) {
+    double sum = 0, sum_sq = 0;
+    for (int s = 0; s < CAL_BASELINE_SAMPLES; s++) {
+      uint16_t val = hw_.readSensor(si);
+      sum += val;
+      sum_sq += (double)val * val;
+    }
+    out_mean = (float)(sum / CAL_BASELINE_SAMPLES);
+    out_stddev = (float)sqrt((sum_sq / CAL_BASELINE_SAMPLES) - (double)out_mean * out_mean);
+  }
+
+  // Measure baselines for sensors in the given sr_col range
+  void calMeasureHalf(int colMin, int colMax) {
+    for (int si = 0; si < NUM_HALL_SENSORS; si++) {
+      int col = si / SR_ROWS;
+      if (col < colMin || col > colMax) continue;
+      int row = (SR_ROWS - 1) - (si % SR_ROWS);
+
+      calMeasureBaseline(si, cal_data_.sensors[si].baseline_mean, cal_data_.sensors[si].baseline_stddev);
+      LOG_BOARD("CAL: baseline sensor %d (%d,%d): mean=%.1f stddev=%.2f",
+                si, col * SR_BLOCK, row * SR_BLOCK,
+                cal_data_.sensors[si].baseline_mean, cal_data_.sensors[si].baseline_stddev);
+    }
+  }
+
+  // Jiggle-measure: move to position, read, jiggle off and back, read again.
+  // Repeat CAL_PIECE_REPEATS times, compute mean + stddev from single readings.
+  void calJiggleMeasure(uint8_t x, uint8_t y, uint8_t si,
+                        float& out_mean, float& out_stddev, uint16_t& out_median) {
+    uint8_t sr_row = y / SR_BLOCK;
+    int8_t jdy = (sr_row == SR_ROWS - 1) ? -1 : 1;
+    uint8_t jy = (uint8_t)(y + jdy);
+
+    uint16_t vals[CAL_PIECE_REPEATS];
+    double sum = 0, sum_sq = 0;
+
+    for (int i = 0; i < CAL_PIECE_REPEATS; i++) {
+      calMove(x, y, x, jy);
+      calMove(x, jy, x, y);
+      delay(CAL_SETTLE_MS);
+
+      vals[i] = hw_.readSensor(si);
+      sum += vals[i];
+      sum_sq += (double)vals[i] * vals[i];
+      LOG_BOARD("CAL: jiggle %d/%d sensor %d val=%d", i + 1, CAL_PIECE_REPEATS, si, vals[i]);
+    }
+
+    // Sort for median (insertion sort, tiny array)
+    for (int i = 1; i < CAL_PIECE_REPEATS; i++) {
+      uint16_t key = vals[i];
+      int j = i - 1;
+      while (j >= 0 && vals[j] > key) { vals[j + 1] = vals[j]; j--; }
+      vals[j + 1] = key;
+    }
+
+    out_mean = (float)(sum / CAL_PIECE_REPEATS);
+    out_stddev = (float)sqrt((sum_sq / CAL_PIECE_REPEATS) - (double)out_mean * out_mean);
+    out_median = vals[CAL_PIECE_REPEATS / 2];
+  }
+
+  // Check sensor at position, set detection to 1 if below threshold
+  void calCheckSensor(uint8_t x, uint8_t y) {
+    uint8_t col = x / SR_BLOCK;
+    uint8_t row = y / SR_BLOCK;
+    uint8_t si = col * SR_ROWS + (SR_ROWS - 1 - row);
+    auto& s = cal_data_.sensors[si];
+
+    /* delay(CAL_SETTLE_MS); */
+    uint16_t val = hw_.readSensor(si);
+    float threshold = (s.baseline_mean + s.piece_mean) / 2.0f;
+    bool detected = (val < threshold);
+
+    if (detected) cal_data_.detections[col][row] = 1;
+    LOG_BOARD("CAL: validate (%d,%d) sensor=%d val=%d thresh=%.0f %s",
+              x, y, si, val, threshold, detected ? "DETECTED" : "miss");
+  }
+
+  // Validation: horizontal zig-zag from top-right to bottom-left
+  bool calValidatePass() {
+    uint8_t px = 9, py = 6;
+
+    for (int row = (int)SR_ROWS - 1; row >= 0; row--) {
+      for (int ci = 0; ci < (int)SR_COLS; ci++) {
+        int col = (row % 2 == 0) ? ((int)SR_COLS - 1 - ci) : ci;
+        uint8_t tx = col * SR_BLOCK;
+        uint8_t ty = row * SR_BLOCK;
+        if (tx != px || ty != py) {
+          if (!calMove(px, py, tx, ty)) return false;
+          px = tx; py = ty;
+        }
+        calCheckSensor(px, py);
+      }
+    }
+    return true;
+  }
+
+  // Wrapper: move with skipValidation, handles diagonals, log on error
+  bool calMove(uint8_t fx, uint8_t fy, uint8_t tx, uint8_t ty) {
+    if (fx == tx && fy == ty) return true;
+
+    // Diagonal: move x first, then y
+    if (fx != tx && fy != ty) {
+      if (!calMove(fx, fy, tx, fy)) return false;
+      return calMove(tx, fy, tx, ty);
+    }
+
+    MoveError err = moveDumbOrthogonal(fx, fy, tx, ty, true);
+    if (err != MoveError::NONE) {
+      LOG_BOARD("CAL: move (%d,%d)->(%d,%d) failed: %d", fx, fy, tx, ty, (int)err);
+    }
+    return err == MoveError::NONE;
+  }
+
+
+
+  // ── Calibration JSON Serialization ──────────────────────────
+
+  String calDataToJson() {
+    if (!cal_data_.valid) return Json().add("valid", false).build();
+
+    String j = "{\"valid\":true,\"sensors\":[";
+    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
+      if (i) j += ",";
+      auto& s = cal_data_.sensors[i];
+      j += "{\"baseline_mean\":";
+      j += String(s.baseline_mean, 1);
+      j += ",\"baseline_stddev\":";
+      j += String(s.baseline_stddev, 2);
+      j += ",\"piece_mean\":";
+      j += String(s.piece_mean, 1);
+      j += ",\"piece_stddev\":";
+      j += String(s.piece_stddev, 2);
+      j += ",\"piece_median\":";
+      j += String(s.piece_median);
+      j += "}";
+    }
+    j += "],\"detections\":[";
+    for (int col = 0; col < SENSOR_COLS; col++) {
+      if (col) j += ",";
+      j += "[";
+      for (int row = 0; row < SENSOR_ROWS; row++) {
+        if (row) j += ",";
+        j += String(cal_data_.detections[col][row]);
+      }
+      j += "]";
+    }
+    j += "]}";
+    return j;
   }
 
   // ── Coil Grid Mapping ─────────────────────────────────────

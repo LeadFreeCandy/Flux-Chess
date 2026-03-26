@@ -54,6 +54,14 @@ inline String handleMoveDumb(Board& board, const String& params) {
 }
 
 
+inline String handleGetCalibration(Board& board, const String&) {
+  return board.getCalibration().toJson();
+}
+
+inline String handleCalibrate(Board& board, const String&) {
+  return board.calibrate().toJson();
+}
+
 inline String handleShutdown(Board& board, const String&) {
   return ShutdownResponse{}.toJson();
 }
@@ -68,6 +76,8 @@ public:
     on("set_piece", handleSetPiece);
     on("move_dumb", handleMoveDumb);
     on("set_rgb", handleSetRGB);
+    on("calibrate", handleCalibrate);
+    on("get_calibration", handleGetCalibration);
     on("shutdown", handleShutdown);
   }
 
