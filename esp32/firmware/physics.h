@@ -45,7 +45,10 @@ struct PhysicsParams {
 
 class PhysicsMove {
 public:
-  PhysicsMove(Hardware& hw) : hw_(hw) {}
+  PhysicsMove(Hardware& hw) : hw_(hw) {
+    LOG_BOARD("physics: force tables loaded (%d layers, %dx%d)",
+              FORCE_TABLE_NUM_LAYERS, FORCE_TABLE_SIZE, FORCE_TABLE_SIZE);
+  }
 
   // Sensor correction disabled — pure physics sim for now
 
@@ -281,6 +284,44 @@ private:
     else if (lx == 0) local_bit = 2 + ly;
     if (local_bit < 0) return -1;
     return (int8_t)(sr_index * 8 + local_bit);
+  }
+
+  // Force table lookup (bilinear interpolation)
+  float tableForceFx(int layer, float dx_mm, float dy_mm) {
+    float fx = (dx_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
+    float fy = (dy_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
+    int ix = (int)fx, iy = (int)fy;
+    if (ix < 0 || ix >= FORCE_TABLE_SIZE - 1 || iy < 0 || iy >= FORCE_TABLE_SIZE - 1) return 0;
+    float tx = fx - ix, ty = fy - iy;
+    return (1-tx)*(1-ty)*force_table_fx[layer][iy][ix]
+         + tx*(1-ty)*force_table_fx[layer][iy][ix+1]
+         + (1-tx)*ty*force_table_fx[layer][iy+1][ix]
+         + tx*ty*force_table_fx[layer][iy+1][ix+1];
+  }
+
+  float tableForceFy(int layer, float dx_mm, float dy_mm) {
+    float fx = (dx_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
+    float fy = (dy_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
+    int ix = (int)fx, iy = (int)fy;
+    if (ix < 0 || ix >= FORCE_TABLE_SIZE - 1 || iy < 0 || iy >= FORCE_TABLE_SIZE - 1) return 0;
+    float tx = fx - ix, ty = fy - iy;
+    return (1-tx)*(1-ty)*force_table_fy[layer][iy][ix]
+         + tx*(1-ty)*force_table_fy[layer][iy][ix+1]
+         + (1-tx)*ty*force_table_fy[layer][iy+1][ix]
+         + tx*ty*force_table_fy[layer][iy+1][ix+1];
+  }
+
+  // Vertical force (negative = pulls magnet down toward coil, increases friction)
+  float tableForceFz(int layer, float dx_mm, float dy_mm) {
+    float fx = (dx_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
+    float fy = (dy_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
+    int ix = (int)fx, iy = (int)fy;
+    if (ix < 0 || ix >= FORCE_TABLE_SIZE - 1 || iy < 0 || iy >= FORCE_TABLE_SIZE - 1) return 0;
+    float tx = fx - ix, ty = fy - iy;
+    return (1-tx)*(1-ty)*force_table_fz[layer][iy][ix]
+         + tx*(1-ty)*force_table_fz[layer][iy][ix+1]
+         + (1-tx)*ty*force_table_fz[layer][iy+1][ix]
+         + tx*ty*force_table_fz[layer][iy+1][ix+1];
   }
 
   // Lateral force: zero at center, peaks at intermediate d, falls off at large d
