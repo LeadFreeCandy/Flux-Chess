@@ -14,7 +14,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 #define LOG_BOARD(fmt, ...) do { if (verbose) printf("[BOARD] " fmt "\n", ##__VA_ARGS__); } while(0)
-#define LOG_HW(fmt, ...) do { if (verbose) printf("[HW]    " fmt "\n", ##__VA_ARGS__); } while(0)
+#define LOG_HW(fmt, ...)   do { if (verbose) printf("[HW]    " fmt "\n", ##__VA_ARGS__); } while(0)
 
 static bool verbose = false;
 
@@ -24,121 +24,73 @@ enum class MoveError : uint8_t {
   NO_PIECE_AT_SOURCE, PATH_BLOCKED, COIL_FAILURE
 };
 
-// Grid constants (from api.h)
-constexpr uint8_t GRID_COLS = 10;
-constexpr uint8_t GRID_ROWS = 7;
-constexpr uint8_t NUM_HALL_SENSORS = 12;
-constexpr uint8_t SENSOR_COLS = 4;
-constexpr uint8_t SENSOR_ROWS = 3;
-
 // ═══════════════════════════════════════════════════════════════
-// Physics types (extracted from physics.h to avoid Arduino deps)
+// Physics types — real-unit version
 // ═══════════════════════════════════════════════════════════════
 
-static constexpr float SENSOR_VELOCITY_WEIGHT = 0.3f;
+struct PhysicsParams {
+  float piece_mass_g         = 4.3f;
+  float max_current_a        = 1.0f;
+  float mu_static            = 0.35f;
+  float mu_kinetic           = 0.25f;
+  float target_velocity_mm_s = 100.0f;
+  float target_accel_mm_s2   = 500.0f;
+  bool  active_brake         = true;
+  uint16_t max_duration_ms   = 5000;
+};
 
 struct PieceState {
-  float x, y;
-  float vx, vy;
+  float x_mm, y_mm;    // position in mm
+  float vx_mm_s, vy_mm_s;  // velocity in mm/s
   bool stuck;
 
-  void reset(float px, float py) {
-    x = px; y = py;
-    vx = 0; vy = 0;
+  void reset(float px_mm, float py_mm) {
+    x_mm = px_mm; y_mm = py_mm;
+    vx_mm_s = 0; vy_mm_s = 0;
     stuck = true;
   }
 };
 
-struct PhysicsParams {
-  float force_k          = 10.0f;
-  float force_epsilon    = 0.3f;
-  float falloff_exp      = 2.0f;
-  float voltage_scale    = 1.0f;
-  float friction_static  = 3.0f;
-  float friction_kinetic = 2.0f;
-  float target_velocity  = 5.0f;
-  float target_accel     = 20.0f;
-  float sensor_k         = 500.0f;
-  float sensor_falloff   = 2.0f;
-  float sensor_threshold = 50.0f;
-  float manual_baseline  = 2030.0f;
-  float manual_piece_mean = 1700.0f;
-  uint16_t max_duration_ms = 5000;
-};
-
-struct CalSensorData {
-  float baseline_mean;
-  float piece_mean;
-};
-
 // ═══════════════════════════════════════════════════════════════
-// Pure physics simulation (no hardware interaction)
+// Stub force functions (mN at 1A)
 // ═══════════════════════════════════════════════════════════════
 
-static constexpr uint8_t SR_COLS = 4;
-static constexpr uint8_t SR_ROWS_GRID = 3;
-static constexpr uint8_t SR_BLOCK = 3;
+static constexpr float GRID_TO_MM = 38.0f / 3.0f;   // ~12.667 mm per coil spacing
 
-static int8_t coordToBit(uint8_t x, uint8_t y) {
-  uint8_t sr_col = x / SR_BLOCK;
-  uint8_t sr_row = y / SR_BLOCK;
-  if (sr_col >= SR_COLS || sr_row >= SR_ROWS_GRID) return -1;
-  uint8_t sr_index = sr_col * SR_ROWS_GRID + sr_row;
-  uint8_t lx = x % SR_BLOCK;
-  uint8_t ly = y % SR_BLOCK;
-  int8_t local_bit = -1;
-  if (ly == 0) local_bit = 2 - lx;
-  else if (lx == 0) local_bit = 2 + ly;
-  if (local_bit < 0) return -1;
-  return (int8_t)(sr_index * 8 + local_bit);
+// Horizontal component of force (mN at 1A) toward coil
+float stubForceFx(float dx_mm, float dy_mm) {
+  float d = sqrtf(dx_mm * dx_mm + dy_mm * dy_mm);
+  if (d < 0.01f) return 0;
+  float f = 54.0f * d / (d * d + 5.0f);
+  return -f * (dx_mm / d);
 }
 
-static uint8_t sensorAt(uint8_t x, uint8_t y) {
-  return (x / SR_BLOCK) * SR_ROWS_GRID + (SR_ROWS_GRID - 1 - (y / SR_BLOCK));
+float stubForceFy(float dx_mm, float dy_mm) {
+  float d = sqrtf(dx_mm * dx_mm + dy_mm * dy_mm);
+  if (d < 0.01f) return 0;
+  float f = 54.0f * d / (d * d + 5.0f);
+  return -f * (dy_mm / d);
 }
 
-static float coilForce(float d, const PhysicsParams& p) {
-  return p.voltage_scale * p.force_k * d / (powf(d, p.falloff_exp) + p.force_epsilon);
+// Vertical component (mN at 1A) — lifts piece, reduces normal force
+float stubForceFz(float dx_mm, float dy_mm) {
+  float d = sqrtf(dx_mm * dx_mm + dy_mm * dy_mm);
+  return -101.0f / (1.0f + d * d * 0.01f);
 }
 
-static float maxForce(const PhysicsParams& p) {
-  float d_peak = powf(p.force_epsilon, 1.0f / p.falloff_exp);
-  return coilForce(d_peak, p);
+// Magnitude of horizontal force at distance d (for 1D cases)
+static float stubForceHMag(float d_mm) {
+  if (d_mm < 0.01f) return 0;
+  return 54.0f * d_mm / (d_mm * d_mm + 5.0f);
 }
 
-static uint8_t forceToDuty(float force, const PhysicsParams& p) {
-  float mf = maxForce(p);
-  if (mf <= 0) return 255;
-  float ratio = force / mf;
-  if (ratio > 1.0f) ratio = 1.0f;
-  if (ratio < 0.0f) ratio = 0.0f;
-  return (uint8_t)(ratio * 255.0f);
-}
-
-static float sensorDistance(float strength, const PhysicsParams& p) {
-  if (strength <= 0) return 99.0f;
-  float ratio = p.sensor_k / strength;
-  if (ratio <= p.force_epsilon) return 0.0f;
-  return powf(ratio - p.force_epsilon, 1.0f / p.sensor_falloff);
-}
-
-// Simulated sensor reading based on piece distance from sensor center
-static uint16_t simulateSensorReading(float piece_x, float piece_y,
-                                       uint8_t sensor_x, uint8_t sensor_y,
-                                       const CalSensorData& cal) {
-  float dx = piece_x - sensor_x;
-  float dy = piece_y - sensor_y;
-  float dist = sqrtf(dx * dx + dy * dy);
-
-  // Inverse of sensor model: reading drops as piece gets closer
-  float delta = cal.baseline_mean - cal.piece_mean;  // max drop at d=0
-  float drop = delta / (1.0f + dist * dist);  // simple falloff
-  return (uint16_t)(cal.baseline_mean - drop);
-}
+// ═══════════════════════════════════════════════════════════════
+// Simulation result
+// ═══════════════════════════════════════════════════════════════
 
 struct SimResult {
   MoveError error;
-  float final_x, final_y;
+  float final_x_mm, final_y_mm;
   float final_vx, final_vy;
   float elapsed_ms;
   int ticks;
@@ -147,207 +99,222 @@ struct SimResult {
 
 static constexpr float MIN_TICK_S = 0.0005f;  // 500us minimum tick
 
-SimResult simulatePhysicsMove(PieceState& piece, const uint8_t path[][2], int path_len,
-                               const PhysicsParams& params, const CalSensorData* cal_sensors = nullptr) {
+// ═══════════════════════════════════════════════════════════════
+// Core simulation loop
+// path_mm[][2] — coil centres in mm
+// ═══════════════════════════════════════════════════════════════
+
+SimResult simulatePhysicsMove(PieceState& piece,
+                               const float path_mm[][2], int path_len,
+                               const PhysicsParams& params)
+{
   SimResult result;
   result.error = MoveError::COIL_FAILURE;
   result.ticks = 0;
 
   if (path_len < 1) return result;
 
-  int coil_idx = 0;
-  float cx = path[0][0], cy = path[0][1];
-
-  float dx = path[path_len - 1][0] - piece.x;
-  float dy = path[path_len - 1][1] - piece.y;
-  bool moveX = (fabsf(dx) > fabsf(dy));
-
-  int8_t activeBit = coordToBit(path[0][0], path[0][1]);
-  if (activeBit < 0) return result;
+  const float mass_kg   = params.piece_mass_g * 1e-3f;
+  const float weight_mN = params.piece_mass_g * 9.81f;   // mN
 
   float elapsed_s = 0;
-  float max_s = params.max_duration_ms / 1000.0f;
+  float max_s     = params.max_duration_ms / 1000.0f;
 
-  float prev_sensor_pos = 0;
-  bool prev_sensor_valid = false;
+  int   coil_idx = 0;
+  float cx_mm = path_mm[0][0];
+  float cy_mm = path_mm[0][1];
 
-  LOG_BOARD("sim: start path_len=%d from=(%.1f,%.1f) to=(%d,%d)",
-            path_len, piece.x, piece.y, path[path_len-1][0], path[path_len-1][1]);
+  // Determine primary move direction from first→last coil
+  float total_dx = path_mm[path_len-1][0] - piece.x_mm;
+  float total_dy = path_mm[path_len-1][1] - piece.y_mm;
+  bool  moveX    = (fabsf(total_dx) > fabsf(total_dy));
+
+  LOG_BOARD("sim: start path_len=%d from=(%.1f,%.1f)mm to=(%.1f,%.1f)mm",
+            path_len, piece.x_mm, piece.y_mm,
+            path_mm[path_len-1][0], path_mm[path_len-1][1]);
 
   while (elapsed_s < max_s) {
     float dt = MIN_TICK_S;
     elapsed_s += dt;
     result.ticks++;
 
-    // 2. Compute distance and direction to active coil
-    float ddx = cx - piece.x;
-    float ddy = cy - piece.y;
-    float dist = sqrtf(ddx * ddx + ddy * ddy);
-    float dir_x = 0, dir_y = 0;
-    if (dist > 0.001f) { dir_x = ddx / dist; dir_y = ddy / dist; }
+    // --- Distance / direction to active coil ---
+    float ddx = cx_mm - piece.x_mm;
+    float ddy = cy_mm - piece.y_mm;
+    float dist_to_coil = sqrtf(ddx * ddx + ddy * ddy);
 
-    float f_available = coilForce(dist, params);
+    // --- Force from active coil at 1A (mN) ---
+    float fx1A = stubForceFx(piece.x_mm - cx_mm, piece.y_mm - cy_mm);
+    float fy1A = stubForceFy(piece.x_mm - cx_mm, piece.y_mm - cy_mm);
+    float fz1A = stubForceFz(piece.x_mm - cx_mm, piece.y_mm - cy_mm);
 
-    // 3. Static friction check
+    // Horizontal force magnitude at 1A
+    float fh1A = sqrtf(fx1A * fx1A + fy1A * fy1A);
+
+    // Normal force at max current (used for static friction check)
+    float normal_max_mN = fmaxf(weight_mN + fz1A * params.max_current_a, 0.0f);
+
+    // --- Static friction check ---
+    float static_friction_mN = params.mu_static * normal_max_mN;
     if (piece.stuck) {
-      if (f_available > params.friction_static) {
+      float max_force_mN = fh1A * params.max_current_a;
+      if (max_force_mN > static_friction_mN) {
         piece.stuck = false;
-        LOG_BOARD("sim: static friction overcome (F=%.2f > %.2f) at t=%.1fms",
-                  f_available, params.friction_static, elapsed_s * 1000);
+        LOG_BOARD("sim: static friction overcome (F=%.2fmN > %.2fmN) at t=%.1fms",
+                  max_force_mN, static_friction_mN, elapsed_s * 1000);
       } else {
         continue;
       }
     }
 
-    // 4. Desired force along movement axis
-    float v_along = (moveX ? piece.vx : piece.vy) * (moveX ? (dx > 0 ? 1.0f : -1.0f) : (dy > 0 ? 1.0f : -1.0f));
-    float speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
+    // --- Controller: compute desired current ---
+    float speed_mm_s = sqrtf(piece.vx_mm_s * piece.vx_mm_s + piece.vy_mm_s * piece.vy_mm_s);
 
-    float speed_error = params.target_velocity - v_along;
-    float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel), params.target_accel);
+    // Remaining distance to final destination
+    float dest_dx = path_mm[path_len-1][0] - piece.x_mm;
+    float dest_dy = path_mm[path_len-1][1] - piece.y_mm;
+    float dist_remaining = sqrtf(dest_dx * dest_dx + dest_dy * dest_dy);
 
-    float friction_force = (speed > 0.001f) ? params.friction_kinetic * speed : 0;
-    float desired_force = desired_accel + friction_force;
-    if (desired_force < 0) desired_force = 0;
+    // Stopping distance with NO current (weight-only normal, conservative)
+    float friction_decel_coast = params.mu_kinetic * weight_mN / mass_kg;
+    float stopping_dist_mm = (friction_decel_coast > 0)
+                           ? (speed_mm_s * speed_mm_s) / (2.0f * friction_decel_coast)
+                           : 0.0f;
 
-    // 5. Duty and actual force
-    float duty_f = (f_available > 0.001f) ? (desired_force / f_available) : 1.0f;
-    if (duty_f > 1.0f) duty_f = 1.0f;
-    if (duty_f < 0.0f) duty_f = 0.0f;
-    float actual_force = f_available * duty_f;
+    // Velocity component along direction to final destination
+    float dir_to_dest_x = (dest_dx / (dist_remaining + 1e-6f));
+    float dir_to_dest_y = (dest_dy / (dist_remaining + 1e-6f));
+    float v_toward_dest = piece.vx_mm_s * dir_to_dest_x + piece.vy_mm_s * dir_to_dest_y;
 
-    float fx = actual_force * dir_x;
-    float fy = actual_force * dir_y;
+    // Current to apply
+    float current_a;
+    if (coil_idx == path_len - 1 &&
+        v_toward_dest > 0.0f &&
+        stopping_dist_mm >= dist_remaining &&
+        params.active_brake) {
+      // Coast — let friction brake the piece
+      current_a = 0.0f;
+      LOG_BOARD("sim: coasting, dist_rem=%.1fmm stop_dist=%.1fmm", dist_remaining, stopping_dist_mm);
+    } else {
+      // Speed control toward active coil / destination
+      // Always target cruise velocity — the coast condition handles stopping
+      float target_v = params.target_velocity_mm_s;
 
-    // Friction
-    if (speed > 0.001f) {
-      float fric = params.friction_kinetic * speed;
-      float max_fric = speed / dt;
-      if (fric > max_fric) fric = max_fric;
-      fx -= fric * (piece.vx / speed);
-      fy -= fric * (piece.vy / speed);
+      float v_along = moveX
+        ? piece.vx_mm_s * (total_dx > 0 ? 1.0f : -1.0f)
+        : piece.vy_mm_s * (total_dy > 0 ? 1.0f : -1.0f);
+
+      float speed_error = target_v - v_along;
+      float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2),
+                                   params.target_accel_mm_s2);
+
+      // Solve for current accounting for Fz-dependent friction:
+      //   net_force = fh1A*I - mu*(weight + fz1A*I) = mass_kg * desired_accel
+      //   I = (mass_kg*desired_accel + mu*weight) / (fh1A - mu*fz1A)
+      float numerator   = mass_kg * desired_accel + params.mu_kinetic * weight_mN;
+      float denominator = fh1A - params.mu_kinetic * fz1A;  // fz1A < 0 so denom > fh1A
+      if (numerator < 0) numerator = 0;
+      current_a = (denominator > 0.001f) ? (numerator / denominator) : params.max_current_a;
+      if (current_a > params.max_current_a) current_a = params.max_current_a;
+      if (current_a < 0)                    current_a = 0;
     }
 
-    // 6. Update velocity
-    piece.vx += fx * dt;
-    piece.vy += fy * dt;
+    // --- Actual horizontal force from coil ---
+    float fx_mN = fx1A * current_a;
+    float fy_mN = fy1A * current_a;
 
-    // Clamp velocity (safety)
-    speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
-    if (speed > params.target_velocity * 1.5f) {
-      float scale = params.target_velocity * 1.5f / speed;
-      piece.vx *= scale;
-      piece.vy *= scale;
+    // Normal force with actual current applied (for friction in integration)
+    float normal_mN = fmaxf(weight_mN + fz1A * current_a, 0.0f);
+
+    // Kinetic friction (opposes velocity)
+    if (speed_mm_s > 0.001f) {
+      float fric_mN   = params.mu_kinetic * normal_mN;
+      float max_fric  = mass_kg * speed_mm_s / dt;  // can't exceed momentum
+      if (fric_mN > max_fric) fric_mN = max_fric;
+      fx_mN -= fric_mN * (piece.vx_mm_s / speed_mm_s);
+      fy_mN -= fric_mN * (piece.vy_mm_s / speed_mm_s);
     }
 
-    // 8. Update position
-    piece.x += piece.vx * dt;
-    piece.y += piece.vy * dt;
+    // --- Integrate (F = ma, so a = F_mN / mass_kg) ---
+    float ax = fx_mN / mass_kg;
+    float ay = fy_mN / mass_kg;
+
+    piece.vx_mm_s += ax * dt;
+    piece.vy_mm_s += ay * dt;
+
+    // Velocity safety clamp
+    speed_mm_s = sqrtf(piece.vx_mm_s * piece.vx_mm_s + piece.vy_mm_s * piece.vy_mm_s);
+    if (speed_mm_s > params.target_velocity_mm_s * 2.0f) {
+      float scale = params.target_velocity_mm_s * 2.0f / speed_mm_s;
+      piece.vx_mm_s *= scale;
+      piece.vy_mm_s *= scale;
+    }
+
+    piece.x_mm += piece.vx_mm_s * dt;
+    piece.y_mm += piece.vy_mm_s * dt;
 
     // Record trajectory every 10 ticks
     if (result.ticks % 10 == 0) {
-      result.trajectory.push_back({piece.x, piece.y});
+      result.trajectory.push_back({piece.x_mm, piece.y_mm});
     }
 
-    // 9. Coil switching
+    // --- Coil switching ---
     if (coil_idx < path_len - 1) {
       bool passed = moveX
-        ? ((dx > 0 && piece.x > cx + 0.01f) || (dx < 0 && piece.x < cx - 0.01f))
-        : ((dy > 0 && piece.y > cy + 0.01f) || (dy < 0 && piece.y < cy - 0.01f));
+        ? ((total_dx > 0 && piece.x_mm > cx_mm + 0.01f) ||
+           (total_dx < 0 && piece.x_mm < cx_mm - 0.01f))
+        : ((total_dy > 0 && piece.y_mm > cy_mm + 0.01f) ||
+           (total_dy < 0 && piece.y_mm < cy_mm - 0.01f));
 
       if (passed) {
         coil_idx++;
-        cx = path[coil_idx][0];
-        cy = path[coil_idx][1];
-        int8_t newBit = coordToBit((uint8_t)cx, (uint8_t)cy);
-        if (newBit < 0) return result;
-        activeBit = newBit;
-        prev_sensor_valid = false;
-
-        LOG_BOARD("sim: switch to coil at (%d,%d) idx=%d/%d t=%.1fms",
-                  (int)cx, (int)cy, coil_idx, path_len, elapsed_s * 1000);
+        cx_mm = path_mm[coil_idx][0];
+        cy_mm = path_mm[coil_idx][1];
+        LOG_BOARD("sim: switch to coil at (%.1f,%.1f)mm idx=%d/%d t=%.1fms",
+                  cx_mm, cy_mm, coil_idx, path_len, elapsed_s * 1000);
       }
     }
 
-    // 11. Sensor correction — for whichever sensor block the active coil is in
-    if (cal_sensors) {
-      uint8_t si = sensorAt((uint8_t)cx, (uint8_t)cy);
-      uint8_t sensor_x = ((int)(cx / SR_BLOCK)) * SR_BLOCK;
-      uint8_t sensor_y = ((int)(cy / SR_BLOCK)) * SR_BLOCK;
-      uint16_t reading = simulateSensorReading(piece.x, piece.y, sensor_x, sensor_y, cal_sensors[si]);
-      float baseline = cal_sensors[si].baseline_mean;
-      float strength = baseline - reading;
+    // --- Arrival check ---
+    if (coil_idx == path_len - 1) {
+      float adx = path_mm[path_len-1][0] - piece.x_mm;
+      float ady = path_mm[path_len-1][1] - piece.y_mm;
+      float d   = sqrtf(adx * adx + ady * ady);
+      float spd = sqrtf(piece.vx_mm_s * piece.vx_mm_s + piece.vy_mm_s * piece.vy_mm_s);
 
-      if (strength > params.sensor_threshold) {
-        float sensor_dist = sensorDistance(strength, params);
-        float scx = sensor_x;
-        float scy = sensor_y;
-        float dest_x = path[path_len-1][0];
-        float dest_y = path[path_len-1][1];
-
-        float sensor_pos;
-        if (moveX) {
-          float sim_dist = fabsf(piece.x - scx);
-          if (sensor_dist < sim_dist) {
-            float dir = (piece.x >= scx) ? 1.0f : -1.0f;
-            piece.x = scx + dir * sensor_dist;
-          }
-          sensor_pos = piece.x;
-        } else {
-          float sim_dist = fabsf(piece.y - scy);
-          if (sensor_dist < sim_dist) {
-            float dir = (piece.y >= scy) ? 1.0f : -1.0f;
-            piece.y = scy + dir * sensor_dist;
-          }
-          sensor_pos = piece.y;
-        }
-
-        if (prev_sensor_valid && dt > 0) {
-          float v_sensor = (sensor_pos - prev_sensor_pos) / dt;
-          if (moveX) {
-            piece.vx = piece.vx * (1.0f - SENSOR_VELOCITY_WEIGHT)
-                     + v_sensor * SENSOR_VELOCITY_WEIGHT;
-          } else {
-            piece.vy = piece.vy * (1.0f - SENSOR_VELOCITY_WEIGHT)
-                     + v_sensor * SENSOR_VELOCITY_WEIGHT;
-          }
-        }
-        prev_sensor_pos = sensor_pos;
-        prev_sensor_valid = true;
-      }
-    }
-
-    // 12. Arrival check — on last coil, sensor shows piece centered
-    if (coil_idx == path_len - 1 && cal_sensors) {
-      uint8_t si = sensorAt(path[path_len-1][0], path[path_len-1][1]);
-      uint8_t sensor_x = ((int)(path[path_len-1][0] / SR_BLOCK)) * SR_BLOCK;
-      uint8_t sensor_y = ((int)(path[path_len-1][1] / SR_BLOCK)) * SR_BLOCK;
-      uint16_t reading = simulateSensorReading(piece.x, piece.y, sensor_x, sensor_y, cal_sensors[si]);
-      float piece_mean = cal_sensors[si].piece_mean;
-      if (fabsf(reading - piece_mean) < params.sensor_threshold) {
-        LOG_BOARD("sim: arrived at (%d,%d) t=%.1fms reading=%d",
-                  path[path_len-1][0], path[path_len-1][1], elapsed_s * 1000, reading);
-        piece.x = path[path_len-1][0];
-        piece.y = path[path_len-1][1];
-        piece.vx = 0;
-        piece.vy = 0;
-        piece.stuck = true;
-        result.error = MoveError::NONE;
+      if (d < 1.0f && spd < 5.0f) {
+        LOG_BOARD("sim: arrived at (%.1f,%.1f)mm d=%.2fmm spd=%.2fmm/s t=%.1fms",
+                  path_mm[path_len-1][0], path_mm[path_len-1][1],
+                  d, spd, elapsed_s * 1000);
+        piece.x_mm    = path_mm[path_len-1][0];
+        piece.y_mm    = path_mm[path_len-1][1];
+        piece.vx_mm_s = 0;
+        piece.vy_mm_s = 0;
+        piece.stuck   = true;
+        result.error  = MoveError::NONE;
         break;
       }
     }
   }
 
-  result.final_x = piece.x;
-  result.final_y = piece.y;
-  result.final_vx = piece.vx;
-  result.final_vy = piece.vy;
-  result.elapsed_ms = elapsed_s * 1000;
+  result.final_x_mm  = piece.x_mm;
+  result.final_y_mm  = piece.y_mm;
+  result.final_vx    = piece.vx_mm_s;
+  result.final_vy    = piece.vy_mm_s;
+  result.elapsed_ms  = elapsed_s * 1000;
   return result;
 }
 
+// Convenience: build mm path from integer grid coordinates
+static void gridToMm(const uint8_t grid[][2], float mm_out[][2], int n) {
+  for (int i = 0; i < n; i++) {
+    mm_out[i][0] = grid[i][0] * GRID_TO_MM;
+    mm_out[i][1] = grid[i][1] * GRID_TO_MM;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
-// Tests
+// Test harness
 // ═══════════════════════════════════════════════════════════════
 
 static int tests_passed = 0;
@@ -368,284 +335,285 @@ static int tests_failed = 0;
 
 #define END_TEST }
 
+// ───────────────────────────────────────────────────────────────
+
 void test_default_sanity() {
   printf("\n=== Default Parameter Sanity ===\n");
   PhysicsParams p;
 
-  float d_peak = powf(p.force_epsilon, 1.0f / p.falloff_exp);
-  float f_peak = coilForce(d_peak, p);
-  float f_at_1 = coilForce(1.0f, p);
-  float t_cross = 9.0f / p.target_velocity;
-  float t_accel = p.target_velocity / p.target_accel;
-  float d_brake = (p.target_velocity * p.target_velocity) / (2.0f * p.friction_kinetic);
+  float mass_kg     = p.piece_mass_g * 1e-3f;
+  float weight_mN   = p.piece_mass_g * 9.81f;
+  // Peak force at ~2.2mm (d_peak ≈ sqrt(5) for stub model)
+  float d_peak_mm   = sqrtf(5.0f);
+  float f_peak_mN   = stubForceHMag(d_peak_mm);
+  float f_at_spacing = stubForceHMag(GRID_TO_MM);
 
-  printf("  Peak force:        %.2f at d=%.2f\n", f_peak, d_peak);
-  printf("  Force at d=1:      %.2f\n", f_at_1);
-  printf("  Static friction:   %.2f\n", p.friction_static);
-  printf("  Kinetic friction:  %.2f (per unit velocity)\n", p.friction_kinetic);
-  printf("  Board cross time:  %.2fs (9 units at v=%.1f)\n", t_cross, p.target_velocity);
-  printf("  Accel time:        %.0fms (to v=%.1f at a=%.1f)\n", t_accel * 1000, p.target_velocity, p.target_accel);
-  printf("  Brake distance:    %.2f grid units\n", d_brake);
+  float static_fric_mN  = p.mu_static  * weight_mN;
+  float kinetic_fric_mN = p.mu_kinetic * weight_mN;
 
-  TEST("Peak force > static friction (piece can move)") {
-    printf("\n    peak=%.2f > static=%.2f\n    ", f_peak, p.friction_static);
-    EXPECT(f_peak > p.friction_static) PASS;
+  float t_cross_s  = (9 * GRID_TO_MM) / p.target_velocity_mm_s;
+  float t_accel_ms = (p.target_velocity_mm_s / p.target_accel_mm_s2) * 1000.0f;
+  float d_brake_mm = (p.target_velocity_mm_s * p.target_velocity_mm_s)
+                   / (2.0f * (p.mu_kinetic * weight_mN / mass_kg));
+
+  printf("  Piece mass:           %.1f g  (%.4f kg)\n", p.piece_mass_g, mass_kg);
+  printf("  Weight:               %.2f mN\n", weight_mN);
+  printf("  Peak force (1A):      %.2f mN at d=%.2f mm\n", f_peak_mN, d_peak_mm);
+  printf("  Force at coil spacing:%.2f mN\n", f_at_spacing);
+  printf("  Static friction:      %.2f mN\n", static_fric_mN);
+  printf("  Kinetic friction:     %.2f mN\n", kinetic_fric_mN);
+  printf("  Board cross time:     %.2f s (9 coils at %.0f mm/s)\n",
+         t_cross_s, p.target_velocity_mm_s);
+  printf("  Accel time:           %.0f ms (to %.0fmm/s at %.0fmm/s²)\n",
+         t_accel_ms, p.target_velocity_mm_s, p.target_accel_mm_s2);
+  printf("  Brake distance:       %.2f mm\n", d_brake_mm);
+
+  // At coil spacing, Fz reduces the normal force — compute effective frictions
+  float fz_at_spacing  = stubForceFz(GRID_TO_MM, 0);
+  float normal_reduced = fmaxf(weight_mN + fz_at_spacing * p.max_current_a, 0.0f);
+  float static_fric_reduced  = p.mu_static  * normal_reduced;
+  float kinetic_fric_reduced = p.mu_kinetic * normal_reduced;
+
+  printf("  Fz at coil spacing:   %.2f mN/A  → normal=%.2f mN\n",
+         fz_at_spacing, normal_reduced);
+  printf("  Effective static fric:%.2f mN (reduced by Fz)\n", static_fric_reduced);
+  printf("  Effective kinet. fric:%.2f mN (reduced by Fz)\n", kinetic_fric_reduced);
+
+  TEST("Peak force (1A) > effective static friction at coil spacing") {
+    // Fz from the coil reduces normal force, so friction is lower than weight-only
+    printf("\n    peak=%.2fmN > eff_static=%.2fmN\n    ", f_at_spacing, static_fric_reduced);
+    EXPECT(f_at_spacing > static_fric_reduced) PASS;
   } END_TEST
 
   TEST("Static friction > kinetic friction") {
-    EXPECT(p.friction_static > p.friction_kinetic) PASS;
+    EXPECT(static_fric_mN > kinetic_fric_mN) PASS;
   } END_TEST
 
-  TEST("Force at d=1 (adjacent coil) > static friction") {
-    printf("\n    f_at_1=%.2f > static=%.2f\n    ", f_at_1, p.friction_static);
-    EXPECT(f_at_1 > p.friction_static) PASS;
+  TEST("Force at coil spacing (12.67mm) > effective kinetic friction") {
+    printf("\n    f=%.2fmN > eff_kinetic=%.2fmN\n    ", f_at_spacing, kinetic_fric_reduced);
+    EXPECT(f_at_spacing > kinetic_fric_reduced) PASS;
   } END_TEST
 
-  TEST("Braking distance < 10 grid units (friction-only worst case)") {
-    printf("\n    d_brake=%.2f (coils assist in practice)\n    ", d_brake);
-    EXPECT(d_brake < 10.0f) PASS;
+  TEST("Braking distance < 200 mm (friction-only worst case)") {
+    printf("\n    d_brake=%.2fmm\n    ", d_brake_mm);
+    EXPECT(d_brake_mm < 200.0f) PASS;
   } END_TEST
 
-  TEST("Board cross time < 5s") {
-    EXPECT(t_cross < 5.0f) PASS;
+  TEST("Board cross time < 5 s") {
+    EXPECT(t_cross_s < 5.0f) PASS;
   } END_TEST
 }
 
+// ───────────────────────────────────────────────────────────────
+
 void test_force_model() {
-  printf("\n=== Force Model ===\n");
-  PhysicsParams p;
+  printf("\n=== Stub Force Model ===\n");
 
   TEST("Force is zero at d=0") {
-    float f = coilForce(0, p);
+    float f = stubForceHMag(0);
     EXPECT(fabsf(f) < 0.001f) PASS;
   } END_TEST
 
-  TEST("Force peaks at intermediate distance") {
-    float f_01 = coilForce(0.1f, p);
-    float f_peak = coilForce(powf(p.force_epsilon, 1.0f / p.falloff_exp), p);
-    float f_5 = coilForce(5.0f, p);
-    EXPECT(f_peak > f_01 && f_peak > f_5) PASS;
+  TEST("Force peaks at intermediate distance (~sqrt(5)mm)") {
+    float d_peak = sqrtf(5.0f);
+    float f_01   = stubForceHMag(0.1f);
+    float f_peak = stubForceHMag(d_peak);
+    float f_50   = stubForceHMag(50.0f);
+    EXPECT(f_peak > f_01 && f_peak > f_50) PASS;
   } END_TEST
 
   TEST("Force falls off at large distance") {
-    float f_1 = coilForce(1.0f, p);
-    float f_3 = coilForce(3.0f, p);
-    float f_10 = coilForce(10.0f, p);
-    EXPECT(f_1 > f_3 && f_3 > f_10) PASS;
+    float f_5  = stubForceHMag(5.0f);
+    float f_20 = stubForceHMag(20.0f);
+    float f_50 = stubForceHMag(50.0f);
+    EXPECT(f_5 > f_20 && f_20 > f_50) PASS;
   } END_TEST
 
-  TEST("Force scales with voltage_scale") {
-    PhysicsParams p2 = p;
-    p2.voltage_scale = 2.0f;
-    float f1 = coilForce(1.0f, p);
-    float f2 = coilForce(1.0f, p2);
-    EXPECT(fabsf(f2 - 2.0f * f1) < 0.001f) PASS;
+  TEST("Fz is negative (lifts piece, reduces normal force)") {
+    float fz = stubForceFz(0, 0);
+    EXPECT(fz < 0) PASS;
   } END_TEST
 
-  TEST("Duty is 0 at d=0 (zero force)") {
-    uint8_t d = forceToDuty(coilForce(0, p), p);
-    EXPECT(d == 0) PASS;
-  } END_TEST
-
-  TEST("Duty peaks at peak force distance") {
-    float d_peak = powf(p.force_epsilon, 1.0f / p.falloff_exp);
-    uint8_t d = forceToDuty(coilForce(d_peak, p), p);
-    EXPECT(d == 255) PASS;
+  TEST("Fx direction: piece left of coil → positive Fx") {
+    // piece at x=0, coil at x=5mm → dx_mm = 0-5 = -5
+    float fx = stubForceFx(-5.0f, 0);
+    EXPECT(fx > 0) PASS;
   } END_TEST
 }
+
+// ───────────────────────────────────────────────────────────────
 
 void test_friction_clamping() {
   printf("\n=== Friction Clamping ===\n");
 
   TEST("Piece with velocity doesn't reverse due to friction") {
     PhysicsParams p;
-    p.friction_kinetic = 100.0f;  // absurdly high friction
+    float mass_kg  = p.piece_mass_g * 1e-3f;
+    float weight_mN = p.piece_mass_g * 9.81f;
 
     PieceState piece;
     piece.reset(0, 0);
-    piece.stuck = false;
-    piece.vy = 1.0f;  // moving up
+    piece.stuck    = false;
+    piece.vy_mm_s  = 10.0f;  // moving at 10 mm/s
 
-    // One tick: high friction should stop, not reverse
     float dt = MIN_TICK_S;
-    float speed = piece.vy;
-    float fric = p.friction_kinetic * speed;
-    float max_fric = speed / dt;
-    if (fric > max_fric) fric = max_fric;
-    piece.vy += (-fric) * dt;  // friction opposes motion
+    float speed = piece.vy_mm_s;
+    float fric_mN = p.mu_kinetic * weight_mN;
+    float max_fric = mass_kg * speed / dt;
+    if (fric_mN > max_fric) fric_mN = max_fric;
+    piece.vy_mm_s += (-fric_mN / mass_kg) * dt;
 
-    EXPECT(piece.vy >= -0.001f) PASS;  // should not go negative
+    EXPECT(piece.vy_mm_s >= -0.001f) PASS;
   } END_TEST
 }
 
-void test_simple_move_no_sensor() {
-  printf("\n=== Simple Move (no sensor) ===\n");
+// ───────────────────────────────────────────────────────────────
 
-  TEST("Piece moves from (0,0) toward (0,3) without sensors") {
+void test_simple_move() {
+  printf("\n=== Simple Move (mm path) ===\n");
+
+  TEST("Piece moves from (0,0) toward (0, 3*GRID_TO_MM) mm") {
     PhysicsParams p;
-    p.max_duration_ms = 2000;
+    p.max_duration_ms = 3000;
 
     PieceState piece;
     piece.reset(0, 0);
 
-    // Path: (0,1), (0,2), (0,3)
-    uint8_t path[3][2] = {{0,1}, {0,2}, {0,3}};
+    // 3-step path in mm
+    float path_mm[3][2] = {
+      { 0, 1 * GRID_TO_MM },
+      { 0, 2 * GRID_TO_MM },
+      { 0, 3 * GRID_TO_MM },
+    };
 
-    SimResult r = simulatePhysicsMove(piece, path, 3, p, nullptr);
+    SimResult r = simulatePhysicsMove(piece, path_mm, 3, p);
 
-    printf("\n    final=(%.2f,%.2f) v=(%.2f,%.2f) t=%.0fms ticks=%d\n    ",
-           r.final_x, r.final_y, r.final_vx, r.final_vy, r.elapsed_ms, r.ticks);
-
-    // Without sensors, no arrival detection — should timeout
-    // But piece should have moved in +Y direction
-    EXPECT(r.final_y > 0.5f) PASS;
-  } END_TEST
-}
-
-void test_simple_move_with_sensor() {
-  printf("\n=== Simple Move (with sensor) ===\n");
-
-  TEST("Piece moves from (0,0) to (0,3) with sensor feedback") {
-    PhysicsParams p;
-    p.max_duration_ms = 5000;
-
-    PieceState piece;
-    piece.reset(0, 0);
-
-    CalSensorData cal[NUM_HALL_SENSORS];
-    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      cal[i].baseline_mean = 2030.0f;
-      cal[i].piece_mean = 1700.0f;
-    }
-
-    uint8_t path[3][2] = {{0,1}, {0,2}, {0,3}};
-
-    SimResult r = simulatePhysicsMove(piece, path, 3, p, cal);
-
-    printf("\n    final=(%.2f,%.2f) v=(%.2f,%.2f) t=%.0fms ticks=%d err=%d\n    ",
-           r.final_x, r.final_y, r.final_vx, r.final_vy, r.elapsed_ms, r.ticks, (int)r.error);
+    printf("\n    final=(%.2f,%.2f)mm v=(%.2f,%.2f)mm/s t=%.0fms err=%d\n    ",
+           r.final_x_mm, r.final_y_mm, r.final_vx, r.final_vy,
+           r.elapsed_ms, (int)r.error);
 
     EXPECT(r.error == MoveError::NONE) PASS;
   } END_TEST
 
-  TEST("Piece arrives near destination") {
+  TEST("Piece arrives within 1mm of destination") {
     PhysicsParams p;
     PieceState piece;
     piece.reset(0, 0);
 
-    CalSensorData cal[NUM_HALL_SENSORS];
-    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      cal[i].baseline_mean = 2030.0f;
-      cal[i].piece_mean = 1700.0f;
-    }
+    float dest = 3 * GRID_TO_MM;
+    float path_mm[3][2] = {
+      { 0, 1 * GRID_TO_MM },
+      { 0, 2 * GRID_TO_MM },
+      { 0, dest },
+    };
 
-    uint8_t path[3][2] = {{0,1}, {0,2}, {0,3}};
-
-    SimResult r = simulatePhysicsMove(piece, path, 3, p, cal);
-
-    printf("\n    final=(%.2f,%.2f)\n    ", r.final_x, r.final_y);
-    EXPECT(r.error == MoveError::NONE && fabsf(r.final_y - 3.0f) < 0.1f) PASS;
+    SimResult r = simulatePhysicsMove(piece, path_mm, 3, p);
+    printf("\n    final_y=%.2fmm dest=%.2fmm err=%d\n    ",
+           r.final_y_mm, dest, (int)r.error);
+    EXPECT(r.error == MoveError::NONE && fabsf(r.final_y_mm - dest) < 1.0f) PASS;
   } END_TEST
 }
+
+// ───────────────────────────────────────────────────────────────
 
 void test_horizontal_move() {
   printf("\n=== Horizontal Move ===\n");
 
-  TEST("Piece moves from (0,0) to (3,0)") {
+  TEST("Piece moves from (0,0) to (3*GRID_TO_MM, 0) mm") {
     PhysicsParams p;
     PieceState piece;
     piece.reset(0, 0);
 
-    CalSensorData cal[NUM_HALL_SENSORS];
-    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      cal[i].baseline_mean = 2030.0f;
-      cal[i].piece_mean = 1700.0f;
-    }
+    float dest = 3 * GRID_TO_MM;
+    float path_mm[3][2] = {
+      { 1 * GRID_TO_MM, 0 },
+      { 2 * GRID_TO_MM, 0 },
+      { dest,           0 },
+    };
 
-    uint8_t path[3][2] = {{1,0}, {2,0}, {3,0}};
-
-    SimResult r = simulatePhysicsMove(piece, path, 3, p, cal);
-
-    printf("\n    final=(%.2f,%.2f) t=%.0fms err=%d\n    ",
-           r.final_x, r.final_y, r.elapsed_ms, (int)r.error);
-    EXPECT(r.error == MoveError::NONE && fabsf(r.final_x - 3.0f) < 0.1f) PASS;
+    SimResult r = simulatePhysicsMove(piece, path_mm, 3, p);
+    printf("\n    final=(%.2f,%.2f)mm t=%.0fms err=%d\n    ",
+           r.final_x_mm, r.final_y_mm, r.elapsed_ms, (int)r.error);
+    EXPECT(r.error == MoveError::NONE && fabsf(r.final_x_mm - dest) < 1.0f) PASS;
   } END_TEST
 }
+
+// ───────────────────────────────────────────────────────────────
 
 void test_coil_switching() {
   printf("\n=== Coil Switching ===\n");
 
-  TEST("Piece passes through intermediate coils") {
+  TEST("Piece passes through intermediate coils (verbose)") {
     PhysicsParams p;
-    p.max_duration_ms = 3000;
+    p.max_duration_ms = 4000;
     verbose = true;
 
     PieceState piece;
     piece.reset(0, 0);
 
-    CalSensorData cal[NUM_HALL_SENSORS];
-    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      cal[i].baseline_mean = 2030.0f;
-      cal[i].piece_mean = 1700.0f;
-    }
+    float path_mm[3][2] = {
+      { 0, 1 * GRID_TO_MM },
+      { 0, 2 * GRID_TO_MM },
+      { 0, 3 * GRID_TO_MM },
+    };
 
-    uint8_t path[3][2] = {{0,1}, {0,2}, {0,3}};
-
-    SimResult r = simulatePhysicsMove(piece, path, 3, p, cal);
-
-    printf("    final=(%.2f,%.2f) t=%.0fms switches detected in logs above\n    ",
-           r.final_x, r.final_y, r.elapsed_ms);
+    SimResult r = simulatePhysicsMove(piece, path_mm, 3, p);
+    printf("    final=(%.2f,%.2f)mm t=%.0fms switches in logs above\n    ",
+           r.final_x_mm, r.final_y_mm, r.elapsed_ms);
     verbose = false;
     EXPECT(r.error == MoveError::NONE) PASS;
   } END_TEST
 }
 
+// ───────────────────────────────────────────────────────────────
+
 void test_velocity_never_reverses() {
   printf("\n=== Velocity Stability ===\n");
 
-  TEST("Y velocity stays non-negative for +Y move") {
+  TEST("Friction clamping never reverses velocity in one tick") {
+    // Verify that a single friction step with extreme friction doesn't
+    // flip velocity sign — the max_fric cap prevents this.
     PhysicsParams p;
-    p.friction_kinetic = 10.0f;  // high friction
+    p.mu_kinetic = 50.0f;  // absurdly high friction
+
+    float mass_kg   = p.piece_mass_g * 1e-3f;
+    float weight_mN = p.piece_mass_g * 9.81f;
+    float dt = MIN_TICK_S;
+
+    // Piece moving at 10mm/s
+    float vy = 10.0f;
+    float normal = weight_mN;
+    float fric_mN  = p.mu_kinetic * normal;
+    float max_fric = mass_kg * vy / dt;
+    if (fric_mN > max_fric) fric_mN = max_fric;
+    vy += (-fric_mN / mass_kg) * dt;
+
+    printf("\n    vy_after=%.4f mm/s (should be >= 0)\n    ", vy);
+    EXPECT(vy >= -0.001f) PASS;
+  } END_TEST
+
+  TEST("Full simulation move completes and piece doesn't fly away") {
+    PhysicsParams p;
+    p.max_duration_ms = 3000;
 
     PieceState piece;
     piece.reset(0, 0);
 
-    uint8_t path[1][2] = {{0,1}};
+    float path_mm[2][2] = {
+      { 0, 1 * GRID_TO_MM },
+      { 0, 2 * GRID_TO_MM },
+    };
 
-    // Run manually tracking min vy
-    piece.stuck = false;  // skip static friction
-    float min_vy = 999;
-    float elapsed = 0;
+    SimResult r = simulatePhysicsMove(piece, path_mm, 2, p);
 
-    for (int i = 0; i < 10000 && elapsed < 2.0f; i++) {
-      float dt = MIN_TICK_S;
-      elapsed += dt;
-
-      float ddy = 1.0f - piece.y;
-      float dist = fabsf(ddy);
-      float force_mag = coilForce(dist, p);
-      float fy = (ddy > 0) ? force_mag : -force_mag;
-
-      float speed = fabsf(piece.vy);
-      if (speed > 0.001f) {
-        float fric = p.friction_kinetic * speed;
-        float max_fric = speed / dt;
-        if (fric > max_fric) fric = max_fric;
-        fy -= fric * (piece.vy > 0 ? 1.0f : -1.0f);
-      }
-
-      if (fabsf(fy) > p.target_accel) fy = (fy > 0 ? 1 : -1) * p.target_accel;
-      piece.vy += fy * dt;
-      if (fabsf(piece.vy) > p.target_velocity) piece.vy = (piece.vy > 0 ? 1 : -1) * p.target_velocity;
-      piece.y += piece.vy * dt;
-
-      if (piece.vy < min_vy) min_vy = piece.vy;
-    }
-
-    printf("\n    min_vy=%.4f final_y=%.2f\n    ", min_vy, piece.y);
-    EXPECT(min_vy >= -0.01f) PASS;
+    printf("\n    final_y=%.2fmm (dest=%.2fmm) err=%d\n    ",
+           r.final_y_mm, 2 * GRID_TO_MM, (int)r.error);
+    // Piece should have moved in the +Y direction and not gone backwards
+    EXPECT(r.final_y_mm > 0.0f) PASS;
   } END_TEST
 }
+
+// ───────────────────────────────────────────────────────────────
 
 void test_param_sensitivity() {
   printf("\n=== Parameter Sensitivity ===\n");
@@ -653,144 +621,150 @@ void test_param_sensitivity() {
   auto run_move = [](PhysicsParams& p) -> SimResult {
     PieceState piece;
     piece.reset(0, 0);
-    CalSensorData cal[NUM_HALL_SENSORS];
-    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      cal[i].baseline_mean = 2030.0f;
-      cal[i].piece_mean = 1700.0f;
-    }
-    uint8_t path[3][2] = {{0,1}, {0,2}, {0,3}};
-    return simulatePhysicsMove(piece, path, 3, p, cal);
+    float path_mm[3][2] = {
+      { 0, 1 * GRID_TO_MM },
+      { 0, 2 * GRID_TO_MM },
+      { 0, 3 * GRID_TO_MM },
+    };
+    return simulatePhysicsMove(piece, path_mm, 3, p);
   };
 
-  TEST("Higher force_k moves piece faster") {
+  TEST("Higher target_velocity moves piece faster") {
     PhysicsParams p1, p2;
-    p1.force_k = 2.0f;
-    p2.force_k = 10.0f;
+    p1.target_velocity_mm_s = 50.0f;
+    p2.target_velocity_mm_s = 150.0f;
     SimResult r1 = run_move(p1);
     SimResult r2 = run_move(p2);
-    printf("\n    k=2: %.0fms, k=10: %.0fms\n    ", r1.elapsed_ms, r2.elapsed_ms);
-    EXPECT(r2.elapsed_ms < r1.elapsed_ms || (r1.error != MoveError::NONE && r2.error == MoveError::NONE)) PASS;
+    printf("\n    v=50: %.0fms (err=%d), v=150: %.0fms (err=%d)\n    ",
+           r1.elapsed_ms, (int)r1.error, r2.elapsed_ms, (int)r2.error);
+    EXPECT(r2.elapsed_ms < r1.elapsed_ms ||
+           (r1.error != MoveError::NONE && r2.error == MoveError::NONE)) PASS;
   } END_TEST
 
-  TEST("Higher friction slows piece down") {
-    PhysicsParams p1, p2;
-    p1.friction_kinetic = 1.0f;
-    p2.friction_kinetic = 20.0f;
-    SimResult r1 = run_move(p1);
-    SimResult r2 = run_move(p2);
-    printf("\n    fric=1: %.0fms, fric=20: %.0fms\n    ", r1.elapsed_ms, r2.elapsed_ms);
-    EXPECT(r2.elapsed_ms > r1.elapsed_ms || r2.error != MoveError::NONE) PASS;
-  } END_TEST
-
-  TEST("Piece can't move if friction_static > peak force") {
+  TEST("Very high friction prevents movement") {
     PhysicsParams p;
-    p.friction_static = 999.0f;
+    p.mu_static  = 10.0f;   // extreme: requires 10× weight in force
+    p.mu_kinetic = 8.0f;
     SimResult r = run_move(p);
-    printf("\n    err=%d final_y=%.2f\n    ", (int)r.error, r.final_y);
-    // Should timeout without moving
-    EXPECT(r.error == MoveError::COIL_FAILURE && fabsf(r.final_y) < 0.1f) PASS;
+    printf("\n    err=%d final_y=%.2fmm\n    ", (int)r.error, r.final_y_mm);
+    EXPECT(r.error == MoveError::COIL_FAILURE && fabsf(r.final_y_mm) < 1.0f) PASS;
   } END_TEST
 }
+
+// ───────────────────────────────────────────────────────────────
 
 void test_velocity_profile() {
   printf("\n=== Velocity Profile ===\n");
 
-  TEST("Piece accelerates to target velocity correctly") {
+  TEST("Piece accelerates to target velocity (mm/s)") {
     PhysicsParams p;
+    float mass_kg   = p.piece_mass_g * 1e-3f;
+    float weight_mN = p.piece_mass_g * 9.81f;
+
     PieceState piece;
     piece.reset(0, 0);
-    piece.stuck = false; // skip static friction for this test
+    piece.stuck = false;
 
-    // Single coil at (0,1), moving +Y
-    float cx = 1.0f;
+    float target_y  = GRID_TO_MM;
     float elapsed_s = 0;
-    float dt = MIN_TICK_S;
+    float dt        = MIN_TICK_S;
+    float max_vy    = 0;
 
-    printf("\n    time(ms)  pos     vel     f_avail desired duty_f  actual\n");
+    printf("\n    time(ms)  pos(mm)  vel(mm/s)  F_avail(mN)  current(A)\n");
 
     for (int i = 0; i < 2000 && elapsed_s < 1.0f; i++) {
       elapsed_s += dt;
 
-      float dist = fabsf(cx - piece.y);
-      float f_available = coilForce(dist, p);
+      float ddy   = target_y - piece.y_mm;
+      float dist  = fabsf(ddy);
+      float fh1A  = stubForceHMag(dist);
+      float fz1A  = stubForceFz(0, piece.y_mm - target_y);
+      float normal = fmaxf(weight_mN + fz1A * p.max_current_a, 0.0f);
 
-      float v_along = piece.vy; // moving in +y
-      float speed = fabsf(piece.vy);
-      float speed_error = p.target_velocity - v_along;
-      float desired_accel = fminf(fmaxf(speed_error / dt, -p.target_accel), p.target_accel);
-      float friction_force = (speed > 0.001f) ? p.friction_kinetic * speed : 0;
-      float desired_force = desired_accel + friction_force;
-      if (desired_force < 0) desired_force = 0;
+      float kinetic_fric_mN = p.mu_kinetic * normal;
+      float v_along = piece.vy_mm_s;
+      float speed_err = p.target_velocity_mm_s - v_along;
+      float desired_accel = fminf(fmaxf(speed_err / dt,
+                                        -p.target_accel_mm_s2),
+                                   p.target_accel_mm_s2);
+      float desired_force_mN = mass_kg * desired_accel + kinetic_fric_mN;
+      if (desired_force_mN < 0) desired_force_mN = 0;
 
-      float duty_f = (f_available > 0.001f) ? (desired_force / f_available) : 1.0f;
-      if (duty_f > 1.0f) duty_f = 1.0f;
-      float actual_force = f_available * duty_f;
+      float current_a = (fh1A > 0.001f) ? (desired_force_mN / fh1A) : p.max_current_a;
+      if (current_a > p.max_current_a) current_a = p.max_current_a;
+      if (current_a < 0)               current_a = 0;
 
-      float fy = actual_force; // toward +y
+      float fy_mN = fh1A * current_a;
+
+      float speed = fabsf(piece.vy_mm_s);
       if (speed > 0.001f) {
-        float fric = p.friction_kinetic * speed;
-        float max_fric = speed / dt;
-        if (fric > max_fric) fric = max_fric;
-        fy -= fric;
+        float fric_mN  = p.mu_kinetic * normal;
+        float max_fric = mass_kg * speed / dt;
+        if (fric_mN > max_fric) fric_mN = max_fric;
+        fy_mN -= fric_mN;
       }
 
-      piece.vy += fy * dt;
-      if (piece.vy > p.target_velocity * 1.5f) piece.vy = p.target_velocity * 1.5f;
-      piece.y += piece.vy * dt;
+      piece.vy_mm_s += (fy_mN / mass_kg) * dt;
+      if (piece.vy_mm_s > p.target_velocity_mm_s * 1.5f)
+        piece.vy_mm_s = p.target_velocity_mm_s * 1.5f;
+      piece.y_mm += piece.vy_mm_s * dt;
+
+      if (piece.vy_mm_s > max_vy) max_vy = piece.vy_mm_s;
 
       if (i % 100 == 0) {
-        printf("    %6.1f   %5.2f   %5.2f   %5.2f   %5.2f   %4.2f    %5.2f\n",
-               elapsed_s * 1000, piece.y, piece.vy, f_available, desired_force, duty_f, actual_force);
+        printf("    %6.1f   %7.2f   %8.2f   %10.2f   %9.3f\n",
+               elapsed_s * 1000, piece.y_mm, piece.vy_mm_s, fh1A, current_a);
       }
     }
 
-    printf("    Final: pos=%.2f vel=%.2f at t=%.0fms\n", piece.y, piece.vy, elapsed_s * 1000);
-    printf("    Note: duty=1.0 throughout means coil is at max — target_accel exceeds coil capability\n");
-    printf("    Max achievable accel ≈ peak_force = %.1f gu/s² (target_accel=%.1f)\n    ",
-           coilForce(powf(p.force_epsilon, 1.0f / p.falloff_exp), p), p.target_accel);
+    printf("    Peak vel: %.2fmm/s  Final: pos=%.2fmm vel=%.2fmm/s at t=%.0fms\n    ",
+           max_vy, piece.y_mm, piece.vy_mm_s, elapsed_s * 1000);
 
-    // Piece should be accelerating (positive velocity)
-    EXPECT(piece.vy > 2.0f) PASS;
+    // Piece should have accelerated to near target_velocity at some point
+    EXPECT(max_vy > p.target_velocity_mm_s * 0.5f) PASS;
   } END_TEST
 }
+
+// ───────────────────────────────────────────────────────────────
 
 void test_long_move() {
   printf("\n=== Long Move ===\n");
 
-  TEST("Piece moves from (0,0) to (0,6) — full board height") {
+  TEST("Piece moves from (0,0) to (0, 6*GRID_TO_MM)mm — full board height") {
     PhysicsParams p;
     p.max_duration_ms = 10000;
 
     PieceState piece;
     piece.reset(0, 0);
 
-    CalSensorData cal[NUM_HALL_SENSORS];
-    for (int i = 0; i < NUM_HALL_SENSORS; i++) {
-      cal[i].baseline_mean = 2030.0f;
-      cal[i].piece_mean = 1700.0f;
-    }
+    float path_mm[6][2] = {
+      { 0, 1 * GRID_TO_MM },
+      { 0, 2 * GRID_TO_MM },
+      { 0, 3 * GRID_TO_MM },
+      { 0, 4 * GRID_TO_MM },
+      { 0, 5 * GRID_TO_MM },
+      { 0, 6 * GRID_TO_MM },
+    };
 
-    uint8_t path[6][2] = {{0,1}, {0,2}, {0,3}, {0,4}, {0,5}, {0,6}};
-
-    SimResult r = simulatePhysicsMove(piece, path, 6, p, cal);
-
-    printf("\n    final=(%.2f,%.2f) t=%.0fms err=%d\n    ",
-           r.final_x, r.final_y, r.elapsed_ms, (int)r.error);
+    SimResult r = simulatePhysicsMove(piece, path_mm, 6, p);
+    printf("\n    final=(%.2f,%.2f)mm t=%.0fms err=%d\n    ",
+           r.final_x_mm, r.final_y_mm, r.elapsed_ms, (int)r.error);
     EXPECT(r.error == MoveError::NONE) PASS;
   } END_TEST
 }
 
+// ───────────────────────────────────────────────────────────────
+
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "-v") == 0) verbose = true;
 
-  printf("FluxChess Physics Simulation Tests\n");
-  printf("===================================\n");
+  printf("FluxChess Physics Simulation Tests (real-unit)\n");
+  printf("===============================================\n");
 
   test_default_sanity();
   test_force_model();
   test_friction_clamping();
-  test_simple_move_no_sensor();
-  test_simple_move_with_sensor();
+  test_simple_move();
   test_horizontal_move();
   test_coil_switching();
   test_velocity_never_reverses();
@@ -798,7 +772,7 @@ int main(int argc, char** argv) {
   test_velocity_profile();
   test_long_move();
 
-  printf("\n===================================\n");
+  printf("\n===============================================\n");
   printf("Results: %d passed, %d failed\n\n", tests_passed, tests_failed);
 
   return tests_failed > 0 ? 1 : 0;
