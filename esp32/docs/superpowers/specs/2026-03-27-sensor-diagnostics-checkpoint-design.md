@@ -72,29 +72,35 @@ After the physics sim returns (either success or timeout):
 
 `movePhysicsOrthogonal()` gains a `max_retry_attempts` parameter (default 0):
 
+The physics move always runs to full completion (coast, centering, arrival or timeout) before any recovery is attempted. A missed intermediate sensor is not a failure — only a failed destination checkpoint triggers recovery.
+
 ```
 MoveError movePhysicsOrthogonal(fromX, fromY, toX, toY, max_retry_attempts = 0):
     result = physics.execute(piece, path, params)
-    diag = collect diagnostic summary
+    diag = collect diagnostic summary (sampled throughout move)
+
+    // Checkpoint: read destination sensor after move completes
+    wait 50ms settle
+    diag.checkpoint_ok = sensorDetectsPiece(destination)
 
     if diag.checkpoint_ok or max_retry_attempts == 0:
         return result with diag
 
-    // Recovery: find where the piece stalled
+    // Recovery: the piece didn't reach the destination.
+    // Scan diag backwards from dest to find the last coil that DID detect the piece.
+    // The piece is somewhere between that coil and the next one.
     last_ok = last coil index where diag.coils[i].detected == true
-    failed = last_ok + 1
+    recovery_target = coil after last_ok (or first coil if none detected)
 
-    // Piece is between last_ok and failed coil positions
-    // Use moveDumb to push it to the failed coil
-    moveDumb(last_ok_pos, failed_pos)
+    // Use moveDumb to push piece to the recovery target
+    moveDumb(last_ok_pos, recovery_target_pos)
 
-    // Verify it arrived at the recovery target
-    if not sensorDetectsPiece(failed_pos):
+    // Verify it arrived at recovery target
+    if not sensorDetectsPiece(recovery_target_pos):
         return error with diag  // unrecoverable
 
-    // Update piece state to recovered position
-    // Recurse to finish the remaining path
-    return movePhysicsOrthogonal(failed_pos, dest, max_retry_attempts - 1)
+    // Recurse: physics move from recovered position to original destination
+    return movePhysicsOrthogonal(recovery_target_pos, dest, max_retry_attempts - 1)
 ```
 
 ### Parameter Threading
@@ -150,12 +156,18 @@ One summary line after each move:
 physics: diag coil0=OK(1682) coil1=OK(1710) coil2=OK(1690) checkpoint=OK
 ```
 
-Or on failure:
+On failure with recovery:
 
 ```
 physics: diag coil0=OK(1682) coil1=MISS(2018) coil2=MISS(2025) checkpoint=FAIL
-physics: recovery attempt 1: moveDumb to coil1, verified OK
-physics: recovery attempt 1: resuming physics move from coil1 to coil2
+physics: recovery: last detected=coil0, pushing to coil1 via moveDumb
+physics: recovery: coil1 verified OK, retrying physics move coil1->coil2 (retries left: 1)
+```
+
+A missed intermediate coil with a passing destination checkpoint is just informational:
+
+```
+physics: diag coil0=OK(1682) coil1=MISS(2018) coil2=OK(1690) checkpoint=OK
 ```
 
 ### What Changes
