@@ -128,10 +128,51 @@ struct MoveDumbRequest {
   uint8_t to_y;
 };
 
+static constexpr int MAX_DIAG_COILS = 9;  // longest possible orthogonal path
+
+struct CoilDiag {
+  uint8_t sensor_idx = 0;
+  uint16_t min_reading = 0xFFFF;  // lowest ADC value seen (lower = stronger detection)
+  bool detected = false;          // did min_reading cross threshold?
+  uint16_t arrival_reading = 0;   // reading after move completes
+};
+
+struct MoveDiag {
+  CoilDiag coils[MAX_DIAG_COILS];
+  uint8_t num_coils = 0;
+  bool checkpoint_ok = false;
+  uint8_t retries_used = 0;
+
+  String toJson() const {
+    String arr = "[";
+    for (int i = 0; i < num_coils; i++) {
+      if (i > 0) arr += ",";
+      arr += "{\"sensor\":";  arr += String(coils[i].sensor_idx);
+      arr += ",\"min\":";     arr += String(coils[i].min_reading);
+      arr += ",\"detected\":"; arr += coils[i].detected ? "true" : "false";
+      arr += ",\"arrival\":"; arr += String(coils[i].arrival_reading);
+      arr += "}";
+    }
+    arr += "]";
+    return Json().add("checkpoint_ok", checkpoint_ok)
+                 .add("retries_used", retries_used)
+                 .addRaw("coils", arr)
+                 .build();
+  }
+};
+
 struct MoveResponse {
   bool success;
   MoveError error;
-  String toJson() const { return Json().add("success", success).add("error", error).build(); }
+  bool has_diag = false;
+  MoveDiag diag;
+
+  String toJson() const {
+    Json j;
+    j.add("success", success).add("error", error);
+    if (has_diag) j.addRaw("diag", diag.toJson());
+    return j.build();
+  }
 };
 
 struct MovePhysicsRequest {
@@ -139,6 +180,9 @@ struct MovePhysicsRequest {
   uint8_t from_y;
   uint8_t to_x;
   uint8_t to_y;
+};
+
+struct SetPhysicsParamsRequest {
   float piece_mass_g;
   float max_current_a;
   float mu_static;
@@ -146,7 +190,8 @@ struct MovePhysicsRequest {
   float target_velocity_mm_s;
   float target_accel_mm_s2;
   float max_jerk_mm_s3;
-  bool active_brake;
+  float coast_friction_offset;
+  uint16_t brake_pulse_ms;
   uint16_t pwm_freq_hz;
   float pwm_compensation;
   bool all_coils_equal;
@@ -163,6 +208,10 @@ struct MovePhysicsRequest {
 // API_COMMAND(set_piece, POST, /api/set_piece, SetPieceRequest, SetRGBResponse)
 // API_COMMAND(move_dumb, POST, /api/move_dumb, MoveDumbRequest, MoveResponse)
 // API_COMMAND(move_physics, POST, /api/move_physics, MovePhysicsRequest, MoveResponse)
+// API_COMMAND(move_piece, POST, /api/move_piece, MoveDumbRequest, MoveResponse)
+// API_COMMAND(hexapawn_play, POST, /api/hexapawn/play, CalibrateRequest, GetCalibrationResponse)
+// API_COMMAND(set_physics_params, POST, /api/set_physics_params, SetPhysicsParamsRequest, ShutdownResponse)
+// API_COMMAND(get_physics_params, GET, /api/get_physics_params, GetBoardStateRequest, GetCalibrationResponse)
 // API_COMMAND(tune_physics, POST, /api/tune_physics, CalibrateRequest, GetCalibrationResponse)
 // API_COMMAND(calibrate, POST, /api/calibrate, CalibrateRequest, CalibrateResponse)
 // API_COMMAND(get_calibration, GET, /api/calibration, GetCalibrationRequest, GetCalibrationResponse)
