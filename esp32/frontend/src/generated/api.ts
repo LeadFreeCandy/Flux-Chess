@@ -70,9 +70,23 @@ export interface MoveDumbRequest {
   to_y: number;
 }
 
+export interface CoilDiag {
+  sensor: number;
+  min: number;
+  detected: boolean;
+  arrival: number;
+}
+
+export interface MoveDiag {
+  checkpoint_ok: boolean;
+  retries_used: number;
+  coils: CoilDiag[];
+}
+
 export interface MoveResponse {
   success: boolean;
   error: any;
+  diag?: MoveDiag;
 }
 
 export interface MovePhysicsRequest {
@@ -80,6 +94,18 @@ export interface MovePhysicsRequest {
   from_y: number;
   to_x: number;
   to_y: number;
+  max_retries?: number;
+}
+
+export interface MovePieceRequest {
+  from_x: number;
+  from_y: number;
+  to_x: number;
+  to_y: number;
+  max_retries?: number;
+}
+
+export interface SetPhysicsParamsRequest {
   piece_mass_g: number;
   max_current_a: number;
   mu_static: number;
@@ -87,7 +113,8 @@ export interface MovePhysicsRequest {
   target_velocity_mm_s: number;
   target_accel_mm_s2: number;
   max_jerk_mm_s3: number;
-  active_brake: boolean;
+  coast_friction_offset: number;
+  brake_pulse_ms: number;
   pwm_freq_hz: number;
   pwm_compensation: number;
   all_coils_equal: boolean;
@@ -103,6 +130,10 @@ export const commands = {
   set_piece: { method: "POST", path: "/api/set_piece" },
   move_dumb: { method: "POST", path: "/api/move_dumb" },
   move_physics: { method: "POST", path: "/api/move_physics" },
+  move_piece: { method: "POST", path: "/api/move_piece" },
+  hexapawn_play: { method: "POST", path: "/api/hexapawn/play" },
+  set_physics_params: { method: "POST", path: "/api/set_physics_params" },
+  get_physics_params: { method: "GET", path: "/api/get_physics_params" },
   tune_physics: { method: "POST", path: "/api/tune_physics" },
   calibrate: { method: "POST", path: "/api/calibrate" },
   get_calibration: { method: "GET", path: "/api/calibration" },
@@ -134,6 +165,22 @@ export function moveDumb(params: MoveDumbRequest): Promise<MoveResponse> {
 
 export function movePhysics(params: MovePhysicsRequest): Promise<MoveResponse> {
   return transport.call("move_physics", params);
+}
+
+export function movePiece(params: MovePieceRequest): Promise<MoveResponse> {
+  return transport.call("move_piece", params);
+}
+
+export function hexapawnPlay(): Promise<GetCalibrationResponse> {
+  return transport.call("hexapawn_play", {});
+}
+
+export function setPhysicsParams(params: SetPhysicsParamsRequest): Promise<ShutdownResponse> {
+  return transport.call("set_physics_params", params);
+}
+
+export function getPhysicsParams(): Promise<GetCalibrationResponse> {
+  return transport.call("get_physics_params", {});
 }
 
 export function tunePhysics(): Promise<GetCalibrationResponse> {
