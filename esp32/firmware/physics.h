@@ -29,7 +29,8 @@ struct PhysicsParams {
   float target_velocity_mm_s = 100.0f;
   float target_accel_mm_s2   = 500.0f;
   float max_jerk_mm_s3       = 50000.0f; // rate of change of acceleration (mm/s³)
-  bool  active_brake       = true;
+  float coast_friction_offset = 0.0f; // added to mu_kinetic for coast distance calculation only
+  uint16_t brake_pulse_ms  = 100;   // 0=no centering pulse, >0=pulse duration at destination
   uint16_t pwm_freq_hz     = 20000;
   float pwm_compensation   = 0.2f;  // 0=ideal PWM, 1=always full on. Accounts for MOSFET gate RC
   bool  all_coils_equal    = false; // ignore layer differences, use layer 0 (closest) for all
@@ -48,8 +49,16 @@ public:
   // Sensor correction disabled — pure physics sim for now
 
   MoveError execute(PieceState& piece, const float path_mm[][2], int path_len,
-                    const PhysicsParams& params) {
+                    const PhysicsParams& params,
+                    MoveDiag* diag = nullptr,
+                    const uint8_t* path_sensors = nullptr, int num_path_sensors = 0,
+                    const float* sensor_thresholds = nullptr) {
     if (path_len < 1) return MoveError::COIL_FAILURE;
+    if (params.piece_mass_g <= 0 || params.max_current_a <= 0 || params.target_velocity_mm_s <= 0) {
+      LOG_BOARD("physics: invalid params (mass=%.1f current=%.1f vel=%.1f)",
+                params.piece_mass_g, params.max_current_a, params.target_velocity_mm_s);
+      return MoveError::COIL_FAILURE;
+    }
 
     int coil_idx = 0;
     float cx = path_mm[0][0], cy = path_mm[0][1];
@@ -81,10 +90,27 @@ public:
     float max_speed = 0;
     int coil_switches = 0;
     bool braked = false;
-    bool coasting = false;  // true after coil cut for stopping
-    unsigned long brake_start_ms = 0;
-    float last_accel = 0;  // for jerk limiting
-    static constexpr unsigned long BRAKE_HOLD_MS = 200;
+    bool coasting = false;       // true after coils cut for coast-to-stop
+    bool centered = false;       // true after centering pulse fired
+    float last_accel = 0;
+
+    // Simulation constants
+    static constexpr float COAST_TOLERANCE_MM = 3.0f;    // trigger centering pulse within this
+    static constexpr float ARRIVAL_DIST_MM = 1.0f;       // consider arrived when closer than this
+    static constexpr float ARRIVAL_SPEED_MM_S = 5.0f;    // and slower than this
+    static constexpr float CENTERED_SPEED_MM_S = 10.0f;  // after centering pulse, done when below this
+    static constexpr float SPEED_CLAMP_FACTOR = 1.5f;    // clamp velocity to target * this
+
+    // Sensor diagnostic tracking
+    if (diag) {
+      diag->num_coils = (uint8_t)fminf(path_len, MAX_DIAG_COILS);
+      for (int i = 0; i < diag->num_coils; i++) {
+        diag->coils[i].sensor_idx = (path_sensors && i < num_path_sensors) ? path_sensors[i] : 0;
+        diag->coils[i].min_reading = 0xFFFF;
+        diag->coils[i].detected = false;
+        diag->coils[i].arrival_reading = 0;
+      }
+    }
 
     LOG_BOARD("physics: start path_len=%d from=(%.1f,%.1f) to=(%.1f,%.1f) mm",
               path_len, piece.x, piece.y, path_mm[path_len-1][0], path_mm[path_len-1][1]);
@@ -94,13 +120,25 @@ public:
       unsigned long now_us = micros();
       unsigned long elapsed_us = now_us - last_tick_us;
       if (elapsed_us < 10000) {
-        delayMicroseconds(10000 - elapsed_us);
+        unsigned long deadline_us = last_tick_us + 10000;
+        // Sample path sensors as fast as possible in the dead time
+        while (micros() < deadline_us) {
+          if (diag && path_sensors && num_path_sensors > 0) {
+            for (int si = 0; si < diag->num_coils && si < num_path_sensors; si++) {
+              uint16_t r = hw_.readSensor(path_sensors[si]);
+              if (r < diag->coils[si].min_reading) diag->coils[si].min_reading = r;
+              if (sensor_thresholds && r < (uint16_t)sensor_thresholds[si]) diag->coils[si].detected = true;
+            }
+          } else {
+            delayMicroseconds(100);  // no sensors to sample, just wait
+          }
+        }
         now_us = micros();
         elapsed_us = now_us - last_tick_us;
       }
       float dt = elapsed_us / 1000000.0f;
       last_tick_us = now_us;
-      if (dt > 0.1f) dt = 0.001f;
+      if (dt > 0.05f) dt = 0.05f;  // cap at 50ms to prevent huge jumps, but don't shrink
 
       // 2. Offset from active coil in mm
       float off_x = piece.x - cx;
@@ -141,83 +179,49 @@ public:
       uint8_t duty;
 
       if (!coasting) {
-        // 6. Stopping check
+        // 6. Stopping check — can we coast to destination from here?
         float dest_x = path_mm[path_len-1][0];
         float dest_y = path_mm[path_len-1][1];
-        float dist_remain = moveX ? fabsf(dest_x - piece.x) : fabsf(dest_y - piece.y);
+        float dist_remain = moveX ? (dest_x - piece.x) * move_sign : (dest_y - piece.y) * move_sign;
 
-        float friction_decel = (weight_mN > 0) ? params.mu_kinetic * weight_mN / mass_kg : 0;
-        float brake_decel = friction_decel;
+        // Friction-only deceleration for coast decision (offset allows tuning)
+        float coast_mu = params.mu_kinetic + params.coast_friction_offset;
+        float friction_decel = (weight_mN > 0) ? coast_mu * weight_mN / mass_kg : 0;
+        float stopping_dist = (friction_decel > 0.01f) ? (v_along * v_along) / (2.0f * friction_decel) : 9999.0f;
 
-        if (params.active_brake && coil_idx > 0) {
-          // Lookup brake force from previous coil
-          int8_t prevBit = coordToBit((uint8_t)(path_mm[coil_idx-1][0] / GRID_TO_MM + 0.5f),
-                                      (uint8_t)(path_mm[coil_idx-1][1] / GRID_TO_MM + 0.5f));
-          if (prevBit >= 0) {
-            int prevLayer = bitToLayer(prevBit);
-            float prev_cx = path_mm[coil_idx-1][0];
-            float prev_cy = path_mm[coil_idx-1][1];
-            float bfx = tableForceFx(prevLayer, piece.x - prev_cx, piece.y - prev_cy);
-            float bfy = tableForceFy(prevLayer, piece.x - prev_cx, piece.y - prev_cy);
-            float brake_force = sqrtf(bfx*bfx + bfy*bfy) * params.max_current_a;
-            brake_decel = friction_decel + brake_force / mass_kg;
-            brake_decel = fminf(brake_decel, params.target_accel_mm_s2);
-          }
-        }
-
-        float stopping_dist = (brake_decel > 0.01f) ? (v_along * v_along) / (2.0f * brake_decel) : 9999.0f;
-
-        if (coil_idx == path_len - 1 && v_along > 0 && stopping_dist >= dist_remain) {
-          // Time to stop — cut current coil, then hold destination coil on
+        if (v_along > 0 && dist_remain > 0 && stopping_dist >= dist_remain) {
+          // Cut all coils — coast to stop on friction alone
           coasting = true;
-
-          if (params.active_brake) {
-            // Activate the destination coil — its centering force holds the piece
-            int8_t destBit = coordToBit((uint8_t)(path_mm[path_len-1][0] / GRID_TO_MM + 0.5f),
-                                        (uint8_t)(path_mm[path_len-1][1] / GRID_TO_MM + 0.5f));
-            if (destBit >= 0 && destBit != activeBit) {
-              hw_.stopCoil((uint8_t)activeBit);
-              hw_.startCoil((uint8_t)destBit, 255);
-              activeBit = destBit;
-              activeLayer = params.all_coils_equal ? 0 : bitToLayer(destBit);
-            }
-            // If already on dest coil, just keep it on
-            braked = true;
-            brake_start_ms = millis();
-            cx = path_mm[path_len-1][0];
-            cy = path_mm[path_len-1][1];
-            LOG_BOARD("physics: holding dest coil at v=%.1f dist_remain=%.1f",
-                      v_along, dist_remain);
-          } else {
-            hw_.stopCoil((uint8_t)activeBit);
-            LOG_BOARD("physics: coasting at v=%.1f dist_remain=%.1f", v_along, dist_remain);
-          }
+          hw_.stopCoil((uint8_t)activeBit);
+          last_current = 0;  // no coil active — prevents Fz from zeroing normal force in friction calc
+          normal_mN = weight_mN;  // recompute: no Fz contribution with coils off
+          LOG_BOARD("physics: coast start v=%.1f stop_dist=%.1f dist_remain=%.1f",
+                    v_along, stopping_dist, dist_remain);
         }
       }
 
       if (coasting) {
-        // Cut hold coil after timeout
-        if (braked && (millis() - brake_start_ms > BRAKE_HOLD_MS)) {
-          hw_.stopCoil((uint8_t)activeBit);
-          braked = false;
-          LOG_BOARD("physics: hold released after %lums", BRAKE_HOLD_MS);
-        }
+        // No coil force during coast — friction only
+        fx = 0; fy = 0;
+        duty = 0;
 
-        // Coasting — friction + optional destination coil hold
-        if (braked) {
-          // Destination coil centering force pulls piece to target
-          float hold_off_x = piece.x - cx;
-          float hold_off_y = piece.y - cy;
-          fx = tableForceFx(activeLayer, hold_off_x, hold_off_y) * params.force_scale * params.max_current_a;
-          fy = tableForceFy(activeLayer, hold_off_x, hold_off_y) * params.force_scale * params.max_current_a;
-          fz_1a = tableForceFz(activeLayer, hold_off_x, hold_off_y) * params.force_scale;
-          // Update normal force for friction with hold coil active
-          normal_mN = weight_mN + fz_1a * params.max_current_a;
-          if (normal_mN < 0) normal_mN = 0;
-        } else {
-          fx = 0; fy = 0;
+        // Centering pulse: when piece has nearly stopped near destination, pulse dest coil
+        float dest_x = path_mm[path_len-1][0];
+        float dest_y = path_mm[path_len-1][1];
+        float d_dest = sqrtf((piece.x-dest_x)*(piece.x-dest_x) + (piece.y-dest_y)*(piece.y-dest_y));
+
+        if (!centered && params.brake_pulse_ms > 0 && d_dest < COAST_TOLERANCE_MM && speed < 20.0f) {
+          // Fire centering pulse on destination coil
+          int8_t destBit = coordToBit((uint8_t)(dest_x / GRID_TO_MM + 0.5f),
+                                      (uint8_t)(dest_y / GRID_TO_MM + 0.5f));
+          if (destBit >= 0) {
+            hw_.pulseBit((uint8_t)destBit, params.brake_pulse_ms, 255);
+            centered = true;
+            braked = true;
+            LOG_BOARD("physics: centering pulse %dms at d=%.1fmm v=%.1f",
+                      params.brake_pulse_ms, d_dest, speed);
+          }
         }
-        duty = braked ? 255 : 0;
       } else {
         // 7. Controller: desired force → current → duty
         float speed_error = params.target_velocity_mm_s - v_along;
@@ -254,11 +258,11 @@ public:
         fy = fy_1a * actual_current;
       }
 
-      // 8. Apply friction (always opposes velocity)
+      // 8. Apply friction (always opposes velocity, can't reverse)
       if (speed > 0.1f) {
         float fric = params.mu_kinetic * fmaxf(normal_mN, 0);
-        float max_fric_accel = speed / dt * mass_kg;
-        if (fric > max_fric_accel) fric = max_fric_accel;
+        float max_fric = speed / dt * mass_kg;  // max force that stops piece in one tick (mN)
+        if (fric > max_fric) fric = max_fric;
         fx -= fric * (piece.vx / speed);
         fy -= fric * (piece.vy / speed);
       }
@@ -268,8 +272,8 @@ public:
       piece.vy += (fy / mass_kg) * dt;
 
       speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
-      if (speed > params.target_velocity_mm_s * 1.5f) {
-        float scale = params.target_velocity_mm_s * 1.5f / speed;
+      if (speed > params.target_velocity_mm_s * SPEED_CLAMP_FACTOR) {
+        float scale = params.target_velocity_mm_s * SPEED_CLAMP_FACTOR / speed;
         piece.vx *= scale; piece.vy *= scale;
       }
       if (speed > max_speed) max_speed = speed;
@@ -307,6 +311,7 @@ public:
           activeLayer = params.all_coils_equal ? 0 : bitToLayer(newBit);
           hw_.startCoil((uint8_t)activeBit, 255);
           last_duty = 255;
+          last_current = params.max_current_a;
           coil_switches++;
 
           LOG_BOARD("physics: switch coil %d at (%.1f,%.1f) L%d idx=%d/%d",
@@ -321,17 +326,20 @@ public:
       }
 
       // 13. Arrival check
+      {
       float dest_x = path_mm[path_len-1][0];
       float dest_y = path_mm[path_len-1][1];
       float d_dest = sqrtf((piece.x-dest_x)*(piece.x-dest_x) + (piece.y-dest_y)*(piece.y-dest_y));
 
-      if (d_dest < 1.0f && speed < 5.0f) {
+      // After centering pulse, or if close enough and stopped
+      bool arrived = (centered && speed < CENTERED_SPEED_MM_S) || (d_dest < ARRIVAL_DIST_MM && speed < ARRIVAL_SPEED_MM_S);
+
+      if (arrived) {
         piece.x = dest_x; piece.y = dest_y;
         piece.vx = 0; piece.vy = 0;
         piece.stuck = true;
 
         if (!coasting) hw_.stopCoil((uint8_t)activeBit);
-        if (braked) hw_.stopCoil((uint8_t)activeBit);
 
         unsigned long total_ms = millis() - t0;
         float dist_total = sqrtf(dx*dx + dy*dy);
@@ -339,25 +347,35 @@ public:
         LOG_BOARD("physics: === MOVE COMPLETE ===");
         LOG_BOARD("physics: time=%lums dist=%.1fmm avg=%.0fmm/s max=%.0fmm/s switches=%d braked=%d",
                   total_ms, dist_total, avg_speed, max_speed, coil_switches, braked ? 1 : 0);
+        // Read final sensor values for diagnostics
+        if (diag && path_sensors && num_path_sensors > 0) {
+          for (int i = 0; i < diag->num_coils && i < num_path_sensors; i++) {
+            diag->coils[i].arrival_reading = hw_.readSensor(path_sensors[i]);
+          }
+        }
         return MoveError::NONE;
       }
+      }
 
-      // Update PWM (coil stays on between ticks, 1ms min tick enforced above)
+      // Update PWM (coil stays on between ticks)
       if (!coasting) {
         if (!hw_.sustainCoil((uint8_t)activeBit, 0, last_duty)) {
           hw_.stopCoil((uint8_t)activeBit);
           return MoveError::COIL_FAILURE;
         }
-      } else if (braked) {
-        hw_.sustainCoil((uint8_t)activeBit, 0, 255);
       }
     }
 
     // Timeout
     if (!coasting) hw_.stopCoil((uint8_t)activeBit);
-    if (braked) hw_.stopCoil((uint8_t)activeBit);
     LOG_BOARD("physics: TIMEOUT pos=(%.1f,%.1f) v=(%.1f,%.1f) max_speed=%.0f",
               piece.x, piece.y, piece.vx, piece.vy, max_speed);
+    // Read final sensor values on timeout too
+    if (diag && path_sensors && num_path_sensors > 0) {
+      for (int i = 0; i < diag->num_coils && i < num_path_sensors; i++) {
+        diag->coils[i].arrival_reading = hw_.readSensor(path_sensors[i]);
+      }
+    }
     return MoveError::COIL_FAILURE;
   }
 
@@ -392,6 +410,7 @@ private:
 
   // Force table lookup (bilinear interpolation)
   float tableForceFx(int layer, float dx_mm, float dy_mm) {
+    if (layer < 0 || layer >= FORCE_TABLE_NUM_LAYERS) return 0;
     float fx = (dx_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
     float fy = (dy_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
     int ix = (int)fx, iy = (int)fy;
@@ -404,6 +423,7 @@ private:
   }
 
   float tableForceFy(int layer, float dx_mm, float dy_mm) {
+    if (layer < 0 || layer >= FORCE_TABLE_NUM_LAYERS) return 0;
     float fx = (dx_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
     float fy = (dy_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
     int ix = (int)fx, iy = (int)fy;
@@ -417,6 +437,7 @@ private:
 
   // Vertical force (negative = pulls magnet down toward coil, increases friction)
   float tableForceFz(int layer, float dx_mm, float dy_mm) {
+    if (layer < 0 || layer >= FORCE_TABLE_NUM_LAYERS) return 0;
     float fx = (dx_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
     float fy = (dy_mm + FORCE_TABLE_EXTENT_MM) / FORCE_TABLE_RES_MM;
     int ix = (int)fx, iy = (int)fy;
