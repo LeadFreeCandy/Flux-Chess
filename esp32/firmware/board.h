@@ -5,9 +5,11 @@
 // Hardware encapsulates all dangerous SR/OE/PWM operations as private.
 
 #pragma once
+#include <Preferences.h>
 #include "api.h"
 #include "hardware.h"
 #include "physics.h"
+#include "hexapawn.h"
 
 // Piece IDs
 #define PIECE_NONE  0
@@ -21,8 +23,14 @@
 
 class Board {
 public:
+  using PollCallback = void(*)();
+  PollCallback poll_callback_ = nullptr;
+
+  void setPollCallback(PollCallback cb) { poll_callback_ = cb; }
+
   Board() {
     initDefaultBoard();
+    loadPhysicsParams();
   }
 
   // ── Piece State ─────────────────────────────────────────────
@@ -107,7 +115,9 @@ public:
   // ── Physics Orthogonal Move ──────────────────────────────────
 
   MoveError movePhysicsOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
-                                  const PhysicsParams& params = PhysicsParams{}, bool skipValidation = false) {
+                                  bool skipValidation = false, int max_retry_attempts = 0,
+                                  MoveDiag* out_diag = nullptr) {
+    const PhysicsParams& params = physics_params_;
     LOG_BOARD("movePhysicsOrthogonal: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
 
     if (fromX >= GRID_COLS || fromY >= GRID_ROWS || toX >= GRID_COLS || toY >= GRID_ROWS)
@@ -140,23 +150,579 @@ public:
       path_len++;
     }
 
-    // Execute physics move
+    // Build sensor list and thresholds for path coils
+    uint8_t path_sensors[MAX_DIAG_COILS];
+    float sensor_thresholds[MAX_DIAG_COILS];
+    int num_path_sensors = 0;
+    {
+      int8_t sx = fromX, sy = fromY;
+      for (int i = 0; i < path_len && num_path_sensors < MAX_DIAG_COILS; i++) {
+        sx += stepX; sy += stepY;
+        uint8_t si = sensorForGrid(sx, sy);
+        float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2030.0f;
+        float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1700.0f;
+        path_sensors[num_path_sensors] = si;
+        sensor_thresholds[num_path_sensors] = (baseline + piece_mean) / 2.0f;
+        num_path_sensors++;
+      }
+    }
+
+    MoveDiag diag;
+
+    // Execute physics move with diagnostics
     PieceState& ps = piece_states_[fromX][fromY];
     ps.reset(fromX * GRID_TO_MM, fromY * GRID_TO_MM);
-    MoveError err = physics_.execute(ps, path_mm, path_len, params);
+    MoveError err = physics_.execute(ps, path_mm, path_len, params,
+                                     &diag, path_sensors, num_path_sensors, sensor_thresholds);
 
-    if (err == MoveError::NONE) {
+    // Checkpoint: verify destination sensor detects the piece
+    if (num_path_sensors > 0) {
+      int dest_idx = num_path_sensors - 1;
+      delay(50);  // settle time
+      uint16_t dest_reading = hw_.readSensor(path_sensors[dest_idx]);
+      diag.coils[dest_idx].arrival_reading = dest_reading;
+      diag.checkpoint_ok = (dest_reading < sensor_thresholds[dest_idx]);
+    } else {
+      diag.checkpoint_ok = true;  // no sensors, assume OK
+    }
+
+    // Log diagnostic summary
+    {
+      String log = "physics: diag";
+      for (int i = 0; i < diag.num_coils; i++) {
+        log += " coil" + String(i) + "=" + (diag.coils[i].detected ? "OK" : "MISS");
+        log += "(" + String(diag.coils[i].min_reading) + ")";
+      }
+      log += " checkpoint=" + String(diag.checkpoint_ok ? "OK" : "FAIL");
+      LOG_BOARD("%s", log.c_str());
+    }
+
+    if (err == MoveError::NONE && diag.checkpoint_ok) {
+      // Success — update board state
       uint8_t piece = pieces_[fromX][fromY];
       pieces_[fromX][fromY] = PIECE_NONE;
       pieces_[toX][toY] = piece;
       piece_states_[toX][toY] = ps;
       LOG_BOARD("movePhysicsOrthogonal OK: piece %d now at (%d,%d)", piece, toX, toY);
+      if (out_diag) *out_diag = diag;
+      return MoveError::NONE;
+    }
+
+    // Checkpoint failed — attempt recovery if retries remain
+    if (!diag.checkpoint_ok && max_retry_attempts > 0) {
+      LOG_BOARD("physics: checkpoint FAIL, attempting recovery (retries left: %d)", max_retry_attempts);
+
+      // Find last coil that detected the piece (scan backwards from destination)
+      int last_ok = -1;
+      for (int i = diag.num_coils - 1; i >= 0; i--) {
+        if (diag.coils[i].detected) { last_ok = i; break; }
+      }
+
+      // Recovery target: the coil after last_ok (or the first coil if none detected)
+      int recovery_idx = (last_ok >= 0) ? last_ok + 1 : 0;
+      if (recovery_idx >= path_len) {
+        // All coils detected but checkpoint still failed — piece overshot?
+        LOG_BOARD("physics: all coils detected but checkpoint failed, no recovery possible");
+        if (out_diag) { diag.retries_used++; *out_diag = diag; }
+        return err != MoveError::NONE ? err : MoveError::COIL_FAILURE;
+      }
+
+      // Compute grid position of recovery target
+      uint8_t recX = fromX + stepX * (recovery_idx + 1);
+      uint8_t recY = fromY + stepY * (recovery_idx + 1);
+
+      // Compute grid position of last-ok coil (or source if none detected)
+      uint8_t lastX = (last_ok >= 0) ? fromX + stepX * (last_ok + 1) : fromX;
+      uint8_t lastY = (last_ok >= 0) ? fromY + stepY * (last_ok + 1) : fromY;
+
+      LOG_BOARD("physics: recovery: last detected=(%d,%d), pushing to (%d,%d) via moveDumb",
+                lastX, lastY, recX, recY);
+
+      // Update board state: piece is at last-ok position
+      uint8_t piece = pieces_[fromX][fromY];
+      pieces_[fromX][fromY] = PIECE_NONE;
+      pieces_[lastX][lastY] = piece;
+
+      // Push piece to recovery target with moveDumb
+      MoveError dumbErr = moveDumbOrthogonal(lastX, lastY, recX, recY, true);
+      if (dumbErr != MoveError::NONE) {
+        LOG_BOARD("physics: recovery moveDumb failed: %d", (int)dumbErr);
+        if (out_diag) { diag.retries_used++; *out_diag = diag; }
+        return dumbErr;
+      }
+
+      // Verify piece arrived at recovery target
+      uint8_t recSensor = sensorForGrid(recX, recY);
+      delay(50);
+      uint16_t recReading = hw_.readSensor(recSensor);
+      float recBaseline = cal_data_.valid ? cal_data_.sensors[recSensor].baseline_mean : 2030.0f;
+      float recPieceMean = cal_data_.valid ? cal_data_.sensors[recSensor].piece_mean : 1700.0f;
+      float recThreshold = (recBaseline + recPieceMean) / 2.0f;
+
+      if (recReading >= recThreshold) {
+        LOG_BOARD("physics: recovery verification FAILED at (%d,%d) reading=%d threshold=%.0f",
+                  recX, recY, recReading, recThreshold);
+        if (out_diag) { diag.retries_used++; *out_diag = diag; }
+        return MoveError::COIL_FAILURE;
+      }
+
+      LOG_BOARD("physics: recovery verified at (%d,%d), retrying physics to (%d,%d)",
+                recX, recY, toX, toY);
+
+      // Recurse: physics move from recovery position to original destination
+      diag.retries_used++;
+      MoveDiag retry_diag;
+      MoveError retryErr = movePhysicsOrthogonal(recX, recY, toX, toY,
+                                                  true, max_retry_attempts - 1, &retry_diag);
+      retry_diag.retries_used += diag.retries_used;
+      if (out_diag) *out_diag = retry_diag;
+      return retryErr;
+    }
+
+    // No recovery — return result with diag
+    if (err == MoveError::NONE) {
+      // Physics said OK but checkpoint failed and no retries — still update board state
+      uint8_t piece = pieces_[fromX][fromY];
+      pieces_[fromX][fromY] = PIECE_NONE;
+      pieces_[toX][toY] = piece;
+      piece_states_[toX][toY] = ps;
+      LOG_BOARD("movePhysicsOrthogonal: physics OK but checkpoint FAIL, piece %d at (%d,%d)", piece, toX, toY);
     } else {
       LOG_BOARD("movePhysicsOrthogonal FAILED: %d", (int)err);
     }
+    if (out_diag) *out_diag = diag;
     return err;
   }
 
+  // ── High-Level Move Planner ─────────────────────────────────
+  // Handles path planning, captures, and obstacle clearing.
+
+  bool use_physics_moves_ = true;
+
+  void setUsePhysics(bool val) { use_physics_moves_ = val; }
+
+  // ── Hexapawn Game (autonomous) ──────────────────────────────
+  // Runs the entire game on the ESP32. Streams progress via LOG_BOARD.
+  // White = human (detected via sensors), Black = AI (moved via coils).
+
+  Hexapawn game_;
+
+  // Sensor detection: does sensor at game col,row detect a piece?
+  bool sensorDetectsPiece(int gc, int gr) {
+    uint8_t si = sensorForGrid(Hexapawn::toGrid(gc), Hexapawn::toGrid(gr));
+    uint16_t reading = hw_.readSensor(si);
+    float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2030.0f;
+    float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1700.0f;
+    float threshold = (baseline + piece_mean) / 2.0f;
+    return reading < threshold;
+  }
+
+  String hexapawnPlay(uint16_t hint_pulse_ms = 0) {
+    game_.reset();
+    initDefaultBoard();
+
+    LOG_BOARD("hexapawn: === NEW GAME ===");
+
+    // Verify all 6 pieces are on the board
+    int detected = 0;
+    for (int c = 0; c < HP_SIZE; c++) {
+      if (sensorDetectsPiece(c, 0)) detected++;
+      if (sensorDetectsPiece(c, 2)) detected++;
+    }
+    if (detected < 6) {
+      LOG_BOARD("hexapawn: ERROR — only %d/6 pieces detected", detected);
+      return Json().add("success", false)
+                   .addStr("error", "not all pieces detected")
+                   .add("detected", detected).build();
+    }
+    LOG_BOARD("hexapawn: all 6 pieces detected, game starting");
+
+    int move_num = 0;
+    while (game_.winner == HP_NONE) {
+      move_num++;
+
+      if (game_.turn == HP_WHITE) {
+        // ── Human turn ──
+        LOG_BOARD("hexapawn: [move %d] your turn (White)", move_num);
+
+        // Get all valid moves for white
+        HexapawnMove allMoves[18];
+        int nMoves = game_.getValidMoves(HP_WHITE, allMoves);
+
+        // Determine which moves are captures
+        bool captureAvail = false;
+        for (int i = 0; i < nMoves; i++) {
+          if (game_.board[allMoves[i].tc][allMoves[i].tr] == HP_BLACK) {
+            captureAvail = true;
+            break;
+          }
+        }
+
+        // Snapshot current sensor state for all white pieces
+        bool whiteSensor[HP_SIZE][HP_SIZE] = {};
+        bool blackSensor[HP_SIZE][HP_SIZE] = {};
+        for (int c = 0; c < HP_SIZE; c++) {
+          for (int r = 0; r < HP_SIZE; r++) {
+            if (game_.board[c][r] == HP_WHITE) whiteSensor[c][r] = sensorDetectsPiece(c, r);
+            if (game_.board[c][r] == HP_BLACK) blackSensor[c][r] = sensorDetectsPiece(c, r);
+          }
+        }
+
+        // Wait for a change — either a white piece lifted or an enemy piece removed
+        int lifted_c = -1, lifted_r = -1;
+        int captured_c = -1, captured_r = -1;
+        bool capturePhase = false;
+
+        unsigned long t0 = millis();
+        while (millis() - t0 < 120000) {  // 2 min timeout per turn
+          if (poll_callback_) poll_callback_();
+          delay(200);
+
+          if (!capturePhase) {
+            // Phase 1: detect a piece being lifted or removed
+            // Check if an enemy piece was removed (capture start)
+            for (int c = 0; c < HP_SIZE; c++) {
+              for (int r = 0; r < HP_SIZE; r++) {
+                if (game_.board[c][r] == HP_BLACK && blackSensor[c][r] && !sensorDetectsPiece(c, r)) {
+                  // Enemy piece lifted — this is a capture
+                  captured_c = c; captured_r = r;
+                  LOG_BOARD("hexapawn: enemy piece removed from (%d,%d)", c, r);
+                  LOG_BOARD("hexapawn: place it in the graveyard, then move your piece there");
+                  capturePhase = true;
+                  // Update both firmware and game board state
+                  pieces_[Hexapawn::toGrid(c)][Hexapawn::toGrid(r)] = PIECE_NONE;
+                  game_.board[c][r] = HP_NONE;
+                  break;
+                }
+              }
+              if (capturePhase) break;
+            }
+
+            if (!capturePhase) {
+              // Check if a white piece was lifted (normal move start)
+              for (int c = 0; c < HP_SIZE; c++) {
+                for (int r = 0; r < HP_SIZE; r++) {
+                  if (game_.board[c][r] == HP_WHITE && whiteSensor[c][r] && !sensorDetectsPiece(c, r)) {
+                    // Check this piece has valid non-capture moves
+                    bool hasMove = false;
+                    for (int i = 0; i < nMoves; i++) {
+                      if (allMoves[i].fc == c && allMoves[i].fr == r &&
+                          game_.board[allMoves[i].tc][allMoves[i].tr] == HP_NONE) {
+                        hasMove = true;
+                        break;
+                      }
+                    }
+                    if (hasMove) {
+                      lifted_c = c; lifted_r = r;
+                      LOG_BOARD("hexapawn: white piece lifted from (%d,%d)", c, r);
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if (capturePhase && lifted_c < 0) {
+            // Capture phase: wait for the white piece to be lifted
+            for (int c = 0; c < HP_SIZE; c++) {
+              for (int r = 0; r < HP_SIZE; r++) {
+                if (game_.board[c][r] == HP_WHITE && whiteSensor[c][r] && !sensorDetectsPiece(c, r)) {
+                  // Check this piece can capture the removed enemy position
+                  for (int i = 0; i < nMoves; i++) {
+                    if (allMoves[i].fc == c && allMoves[i].fr == r &&
+                        allMoves[i].tc == captured_c && allMoves[i].tr == captured_r) {
+                      lifted_c = c; lifted_r = r;
+                      LOG_BOARD("hexapawn: white piece lifted from (%d,%d) for capture", c, r);
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Wait for placement: white piece appears at valid destination
+          if (lifted_c >= 0) {
+            for (int i = 0; i < nMoves; i++) {
+              if (allMoves[i].fc != lifted_c || allMoves[i].fr != lifted_r) continue;
+              int dc = allMoves[i].tc, dr = allMoves[i].tr;
+
+              // For capture: destination is where enemy was (already empty)
+              // For normal: destination must be empty
+              if (dc == lifted_c && dr == lifted_r) continue;  // can't place back
+              if (sensorDetectsPiece(dc, dr)) {
+                // Piece detected at valid destination
+                LOG_BOARD("hexapawn: piece placed at (%d,%d)", dc, dr);
+
+                // Apply move to game state
+                bool isCapture = (captured_c == dc && captured_r == dr);
+                HexapawnMove pm = { (int8_t)lifted_c, (int8_t)lifted_r, (int8_t)dc, (int8_t)dr };
+                game_.applyMove(pm);
+
+                // Update firmware board state
+                pieces_[Hexapawn::toGrid(lifted_c)][Hexapawn::toGrid(lifted_r)] = PIECE_NONE;
+                pieces_[Hexapawn::toGrid(dc)][Hexapawn::toGrid(dr)] = PIECE_WHITE;
+
+                LOG_BOARD("hexapawn: White (%d,%d)->(%d,%d)%s",
+                          lifted_c, lifted_r, dc, dr, isCapture ? " CAPTURE" : "");
+                goto turn_done;
+              }
+            }
+
+            // Check if piece was put back (not a move, reset)
+            if (sensorDetectsPiece(lifted_c, lifted_r) && !capturePhase) {
+              LOG_BOARD("hexapawn: piece returned to (%d,%d), still your turn", lifted_c, lifted_r);
+              lifted_c = -1; lifted_r = -1;
+            }
+
+            // Hint: pulse source square + valid destination coils every ~1s
+            if (hint_pulse_ms > 0 && (millis() / 1000 != (millis() - 200) / 1000)) {
+              // Pulse source square (return-to + re-center)
+              {
+                uint8_t gx = Hexapawn::toGrid(lifted_c), gy = Hexapawn::toGrid(lifted_r);
+                int8_t bit = coordToBit(gx, gy);
+                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
+              }
+              // Pulse valid destinations
+              for (int i = 0; i < nMoves; i++) {
+                if (allMoves[i].fc != lifted_c || allMoves[i].fr != lifted_r) continue;
+                int dc = allMoves[i].tc, dr = allMoves[i].tr;
+                uint8_t gx = Hexapawn::toGrid(dc), gy = Hexapawn::toGrid(dr);
+                int8_t bit = coordToBit(gx, gy);
+                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
+              }
+            }
+          }
+        }
+
+        // Timeout
+        LOG_BOARD("hexapawn: timeout waiting for player");
+        return Json().add("success", false).addStr("error", "timeout").build();
+
+        turn_done:;
+
+      } else {
+        // ── AI turn ──
+        LOG_BOARD("hexapawn: [move %d] AI thinking (Black)...", move_num);
+        if (poll_callback_) poll_callback_();
+        delay(500);
+
+        HexapawnMove ai = game_.computeAiMove();
+
+        // Check AI has valid moves (shouldn't happen — checkWin catches it, but be safe)
+        HexapawnMove aiMoves[18];
+        int nAiMoves = game_.getValidMoves(HP_BLACK, aiMoves);
+        if (nAiMoves == 0) {
+          LOG_BOARD("hexapawn: AI has no valid moves");
+          game_.winner = HP_WHITE;
+          break;
+        }
+
+        bool capture = (game_.board[ai.tc][ai.tr] == HP_WHITE);
+
+        LOG_BOARD("hexapawn: AI moves (%d,%d)->(%d,%d)%s",
+                  ai.fc, ai.fr, ai.tc, ai.tr, capture ? " CAPTURE" : "");
+
+        // Execute physical move FIRST (movePiece handles captures + path clearing)
+        uint8_t gfx = Hexapawn::toGrid(ai.fc), gfy = Hexapawn::toGrid(ai.fr);
+        uint8_t gtx = Hexapawn::toGrid(ai.tc), gty = Hexapawn::toGrid(ai.tr);
+        MoveError err = movePiece(gfx, gfy, gtx, gty);
+        if (err != MoveError::NONE) {
+          LOG_BOARD("hexapawn: AI physical move FAILED: %d — applying to game state anyway", (int)err);
+        }
+
+        // Apply to game state AFTER physical execution
+        game_.applyMove(ai);
+
+        if (poll_callback_) poll_callback_();
+      }
+
+      if (game_.winner != HP_NONE) {
+        const char* w = (game_.winner == HP_WHITE) ? "White (You)" : "Black (AI)";
+        LOG_BOARD("hexapawn: === %s WINS! === (move %d)", w, move_num);
+      }
+    }
+
+    return Json().add("success", true)
+                 .addStr("winner", game_.winner == HP_WHITE ? "white" : "black")
+                 .add("moves", move_num).build();
+  }
+
+  MoveError movePiece(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
+    LOG_BOARD("movePiece: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
+
+    if (getPiece(fromX, fromY) == PIECE_NONE) return MoveError::NO_PIECE_AT_SOURCE;
+
+    // Handle capture: if destination has an enemy piece, kill it first
+    uint8_t destPiece = getPiece(toX, toY);
+    if (destPiece != PIECE_NONE && destPiece != getPiece(fromX, fromY)) {
+      MoveError err = killPiece(toX, toY);
+      if (err != MoveError::NONE) return err;
+    }
+
+    // Manhattan routing: if diagonal, pick leg order with fewer obstructions
+    if (fromX != toX && fromY != toY) {
+      int obstX1st = countObstructions(fromX, fromY, toX, fromY)
+                   + countObstructions(toX, fromY, toX, toY);
+      int obstY1st = countObstructions(fromX, fromY, fromX, toY)
+                   + countObstructions(fromX, toY, toX, toY);
+
+      if (obstX1st <= obstY1st) {
+        // X first, then Y
+        MoveError err = moveOrthogonalClearing(fromX, fromY, toX, fromY);
+        if (err != MoveError::NONE) return err;
+        return moveOrthogonalClearing(toX, fromY, toX, toY);
+      } else {
+        // Y first, then X
+        MoveError err = moveOrthogonalClearing(fromX, fromY, fromX, toY);
+        if (err != MoveError::NONE) return err;
+        return moveOrthogonalClearing(fromX, toY, toX, toY);
+      }
+    }
+
+    // Simple orthogonal move
+    return moveOrthogonalClearing(fromX, fromY, toX, toY);
+  }
+
+  // Kill a piece by moving it to the graveyard
+  MoveError killPiece(uint8_t x, uint8_t y) {
+    if (getPiece(x, y) == PIECE_NONE) return MoveError::NONE;
+
+    int8_t gy = findGraveyardSlot();
+    if (gy < 0) {
+      LOG_BOARD("killPiece: no graveyard slot available!");
+      return MoveError::COIL_FAILURE;
+    }
+
+    LOG_BOARD("killPiece: (%d,%d) -> graveyard (%d,%d)", x, y, GRAVE_X, gy);
+    return movePiece(x, y, GRAVE_X, (uint8_t)gy);
+  }
+
+private:
+  static constexpr uint8_t GRAVE_X = 9;
+  static constexpr int MAX_CLEAR_DEPTH = 10;
+
+  // Find an empty graveyard slot (x=9, y=0,3,6)
+  int8_t findGraveyardSlot() {
+    static const uint8_t slots[] = {0, 3, 6};
+    for (auto sy : slots) {
+      if (getPiece(GRAVE_X, sy) == PIECE_NONE) return sy;
+    }
+    return -1;  // graveyard full
+  }
+
+  // Count pieces blocking an orthogonal path (exclusive of from, inclusive of to)
+  int countObstructions(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
+    if (fromX == toX && fromY == toY) return 0;
+    int count = 0;
+    int8_t dx = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
+    int8_t dy = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
+    int8_t cx = fromX + dx, cy = fromY + dy;
+    while (cx != toX || cy != toY) {
+      if (getPiece(cx, cy) != PIECE_NONE) count++;
+      cx += dx; cy += dy;
+    }
+    return count;
+  }
+
+  // Execute a single orthogonal atomic move (dumb or physics)
+  MoveError atomicMove(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
+    if (use_physics_moves_) {
+      return movePhysicsOrthogonal(fromX, fromY, toX, toY, true);
+    } else {
+      return moveDumbOrthogonal(fromX, fromY, toX, toY, true);
+    }
+  }
+
+  // Move orthogonally, clearing any blocking pieces out of the way
+  MoveError moveOrthogonalClearing(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY, int depth = 0) {
+    if (depth > MAX_CLEAR_DEPTH) {
+      LOG_BOARD("moveOrthogonalClearing: max depth exceeded");
+      return MoveError::COIL_FAILURE;
+    }
+    if (fromX == toX && fromY == toY) return MoveError::NONE;
+
+    // Must be orthogonal
+    if (fromX != toX && fromY != toY) return MoveError::NOT_ORTHOGONAL;
+
+    int8_t dx = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
+    int8_t dy = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
+    bool horizontal = (dx != 0);
+
+    // Collect blocking pieces along the path (from→to exclusive of from)
+    struct Blocker { uint8_t x, y; };
+    Blocker blockers[GRID_COLS + GRID_ROWS];
+    int nblock = 0;
+
+    int8_t cx = fromX + dx, cy = fromY + dy;
+    while (cx != (int8_t)toX + dx || cy != (int8_t)toY + dy) {
+      if (getPiece(cx, cy) != PIECE_NONE && (cx != fromX || cy != fromY)) {
+        blockers[nblock++] = { (uint8_t)cx, (uint8_t)cy };
+      }
+      cx += dx; cy += dy;
+    }
+
+    // Slide each blocker perpendicular
+    struct Displaced { uint8_t ox, oy, nx, ny; };
+    Displaced displaced[GRID_COLS + GRID_ROWS];
+    int ndisp = 0;
+
+    for (int i = 0; i < nblock; i++) {
+      uint8_t bx = blockers[i].x, by = blockers[i].y;
+
+      // Find a perpendicular direction to slide this piece
+      // Try both directions, pick the one with fewer obstructions
+      int8_t perpDx = horizontal ? 0 : 1;
+      int8_t perpDy = horizontal ? 1 : 0;
+
+      // Try positive direction first, then negative (use signed to avoid underflow)
+      int16_t tgt1x = (int16_t)bx + perpDx * 3, tgt1y = (int16_t)by + perpDy * 3;
+      int16_t tgt2x = (int16_t)bx - perpDx * 3, tgt2y = (int16_t)by - perpDy * 3;
+
+      bool tgt1ok = tgt1x >= 0 && tgt1x < GRID_COLS && tgt1y >= 0 && tgt1y < GRID_ROWS;
+      bool tgt2ok = tgt2x >= 0 && tgt2x < GRID_COLS && tgt2y >= 0 && tgt2y < GRID_ROWS;
+
+      int obs1 = tgt1ok ? (getPiece(tgt1x, tgt1y) != PIECE_NONE ? 1 : 0) + countObstructions(bx, by, tgt1x, tgt1y) : 999;
+      int obs2 = tgt2ok ? (getPiece(tgt2x, tgt2y) != PIECE_NONE ? 1 : 0) + countObstructions(bx, by, tgt2x, tgt2y) : 999;
+
+      uint8_t tx, ty;
+      if (obs1 <= obs2 && tgt1ok) { tx = tgt1x; ty = tgt1y; }
+      else if (tgt2ok) { tx = tgt2x; ty = tgt2y; }
+      else {
+        LOG_BOARD("moveOrthogonalClearing: can't clear (%d,%d)", bx, by);
+        // Move displaced pieces back before failing
+        for (int j = ndisp - 1; j >= 0; j--) {
+          atomicMove(displaced[j].nx, displaced[j].ny, displaced[j].ox, displaced[j].oy);
+        }
+        return MoveError::PATH_BLOCKED;
+      }
+
+      // Recursively clear and move the blocker
+      MoveError err = moveOrthogonalClearing(bx, by, tx, ty, depth + 1);
+      if (err != MoveError::NONE) {
+        // Move displaced pieces back before failing
+        for (int j = ndisp - 1; j >= 0; j--) {
+          atomicMove(displaced[j].nx, displaced[j].ny, displaced[j].ox, displaced[j].oy);
+        }
+        return err;
+      }
+      displaced[ndisp++] = { bx, by, tx, ty };
+    }
+
+    // Path is clear — execute the main move
+    MoveError err = atomicMove(fromX, fromY, toX, toY);
+
+    // Move displaced pieces back (in reverse order)
+    for (int j = ndisp - 1; j >= 0; j--) {
+      // Don't move back pieces that ended up in the graveyard
+      if (displaced[j].nx == GRAVE_X) continue;
+      atomicMove(displaced[j].nx, displaced[j].ny, displaced[j].ox, displaced[j].oy);
+    }
+
+    return err;
+  }
+
+public:
   // ── Physics Tuning ────────────────────────────────────────────
   // Automated 4-phase tuning: sensor fit, static friction, force profile, verification.
   // Place piece at (3,3) before calling.
@@ -374,9 +940,10 @@ public:
     uint16_t dest_readings[TUNE_NUM_REPS];
     unsigned long elapsed_ms[TUNE_NUM_REPS];
 
-    PhysicsParams test_params;
-    test_params.mu_static = fitted_friction_static;
-    test_params.mu_kinetic = fitted_friction_kinetic;
+    // Temporarily set discovered params for verification moves
+    PhysicsParams saved_params = physics_params_;
+    physics_params_.mu_static = fitted_friction_static;
+    physics_params_.mu_kinetic = fitted_friction_kinetic;
 
     for (int rep = 0; rep < TUNE_NUM_REPS; rep++) {
       // Move piece to (5,3)
@@ -389,7 +956,7 @@ public:
 
       // Attempt physics move back
       unsigned long t0 = millis();
-      MoveError err = movePhysicsOrthogonal(TUNE_X + 2, TUNE_Y, TUNE_X, TUNE_Y, test_params, true);
+      MoveError err = movePhysicsOrthogonal(TUNE_X + 2, TUNE_Y, TUNE_X, TUNE_Y, true);
       elapsed_ms[rep] = millis() - t0;
 
       delay(100);
@@ -450,6 +1017,9 @@ public:
     j += ",\"target_accel\":20.0";
     j += ",\"max_duration_ms\":5000";
     j += "}}";
+
+    // Restore original params
+    physics_params_ = saved_params;
 
     LOG_BOARD("TUNE: complete");
     initDefaultBoard();
@@ -555,6 +1125,37 @@ public:
   SetRGBResponse setRGB(uint8_t r, uint8_t g, uint8_t b) { hw_.setRGB(r, g, b); return { true }; }
   void shutdown() { hw_.shutdown(); }
 
+  // ── Physics Params (stored, persisted to NVS) ──────────────
+
+  const PhysicsParams& getPhysicsParams() const { return physics_params_; }
+
+  void setPhysicsParams(const PhysicsParams& p) {
+    physics_params_ = p;
+    savePhysicsParams();
+    LOG_BOARD("physics params updated and saved to NVS");
+  }
+
+  String physicsParamsToJson() const {
+    const auto& p = physics_params_;
+    String j = "{";
+    j += "\"piece_mass_g\":"; j += String(p.piece_mass_g, 2);
+    j += ",\"max_current_a\":"; j += String(p.max_current_a, 2);
+    j += ",\"mu_static\":"; j += String(p.mu_static, 3);
+    j += ",\"mu_kinetic\":"; j += String(p.mu_kinetic, 3);
+    j += ",\"target_velocity_mm_s\":"; j += String(p.target_velocity_mm_s, 1);
+    j += ",\"target_accel_mm_s2\":"; j += String(p.target_accel_mm_s2, 1);
+    j += ",\"max_jerk_mm_s3\":"; j += String(p.max_jerk_mm_s3, 1);
+    j += ",\"coast_friction_offset\":"; j += String(p.coast_friction_offset, 3);
+    j += ",\"brake_pulse_ms\":"; j += String(p.brake_pulse_ms);
+    j += ",\"pwm_freq_hz\":"; j += String(p.pwm_freq_hz);
+    j += ",\"pwm_compensation\":"; j += String(p.pwm_compensation, 2);
+    j += ",\"all_coils_equal\":"; j += p.all_coils_equal ? "true" : "false";
+    j += ",\"force_scale\":"; j += String(p.force_scale, 2);
+    j += ",\"max_duration_ms\":"; j += String(p.max_duration_ms);
+    j += "}";
+    return j;
+  }
+
   // ── Calibration Data Access ─────────────────────────────────
 
   struct CalSensor {
@@ -581,6 +1182,51 @@ private:
   CalData cal_data_;
   PieceState piece_states_[GRID_COLS][GRID_ROWS];
   PhysicsMove physics_{hw_};
+  PhysicsParams physics_params_;
+  Preferences prefs_;
+
+  // ── NVS Physics Params ─────────────────────────────────────
+
+  void loadPhysicsParams() {
+    prefs_.begin("physics", true);  // read-only
+    physics_params_.piece_mass_g       = prefs_.getFloat("mass", physics_params_.piece_mass_g);
+    physics_params_.max_current_a      = prefs_.getFloat("current", physics_params_.max_current_a);
+    physics_params_.mu_static          = prefs_.getFloat("mu_s", physics_params_.mu_static);
+    physics_params_.mu_kinetic         = prefs_.getFloat("mu_k", physics_params_.mu_kinetic);
+    physics_params_.target_velocity_mm_s = prefs_.getFloat("vel", physics_params_.target_velocity_mm_s);
+    physics_params_.target_accel_mm_s2   = prefs_.getFloat("accel", physics_params_.target_accel_mm_s2);
+    physics_params_.max_jerk_mm_s3       = prefs_.getFloat("jerk", physics_params_.max_jerk_mm_s3);
+    physics_params_.coast_friction_offset = prefs_.getFloat("coast_f", physics_params_.coast_friction_offset);
+    physics_params_.brake_pulse_ms     = prefs_.getUShort("brake", physics_params_.brake_pulse_ms);
+    physics_params_.pwm_freq_hz        = prefs_.getUShort("pwm_f", physics_params_.pwm_freq_hz);
+    physics_params_.pwm_compensation   = prefs_.getFloat("pwm_c", physics_params_.pwm_compensation);
+    physics_params_.all_coils_equal    = prefs_.getBool("eq_coil", physics_params_.all_coils_equal);
+    physics_params_.force_scale        = prefs_.getFloat("f_scale", physics_params_.force_scale);
+    physics_params_.max_duration_ms    = prefs_.getUShort("timeout", physics_params_.max_duration_ms);
+    prefs_.end();
+    LOG_BOARD("physics params loaded from NVS (I=%.2fA v=%.0f a=%.0f)",
+              physics_params_.max_current_a, physics_params_.target_velocity_mm_s, physics_params_.target_accel_mm_s2);
+  }
+
+  void savePhysicsParams() {
+    prefs_.begin("physics", false);  // read-write
+    prefs_.putFloat("mass", physics_params_.piece_mass_g);
+    prefs_.putFloat("current", physics_params_.max_current_a);
+    prefs_.putFloat("mu_s", physics_params_.mu_static);
+    prefs_.putFloat("mu_k", physics_params_.mu_kinetic);
+    prefs_.putFloat("vel", physics_params_.target_velocity_mm_s);
+    prefs_.putFloat("accel", physics_params_.target_accel_mm_s2);
+    prefs_.putFloat("jerk", physics_params_.max_jerk_mm_s3);
+    prefs_.putFloat("coast_f", physics_params_.coast_friction_offset);
+    prefs_.putUShort("brake", physics_params_.brake_pulse_ms);
+    prefs_.putUShort("pwm_f", physics_params_.pwm_freq_hz);
+    prefs_.putFloat("pwm_c", physics_params_.pwm_compensation);
+    prefs_.putBool("eq_coil", physics_params_.all_coils_equal);
+    prefs_.putFloat("f_scale", physics_params_.force_scale);
+    prefs_.putUShort("timeout", physics_params_.max_duration_ms);
+    prefs_.end();
+  }
+
   // ── Default Board ───────────────────────────────────────────
   // 3 white on bottom row, 3 black on top row
   // Missing 4th piece on each side (only 3 per side)
