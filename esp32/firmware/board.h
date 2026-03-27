@@ -526,7 +526,7 @@ public:
         // Execute physical move FIRST (movePiece handles captures + path clearing)
         uint8_t gfx = Hexapawn::toGrid(ai.fc), gfy = Hexapawn::toGrid(ai.fr);
         uint8_t gtx = Hexapawn::toGrid(ai.tc), gty = Hexapawn::toGrid(ai.tr);
-        MoveError err = movePiece(gfx, gfy, gtx, gty);
+        MoveError err = movePiece(gfx, gfy, gtx, gty, 2);
         if (err != MoveError::NONE) {
           LOG_BOARD("hexapawn: AI physical move FAILED: %d — applying to game state anyway", (int)err);
         }
@@ -548,7 +548,8 @@ public:
                  .add("moves", move_num).build();
   }
 
-  MoveError movePiece(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY) {
+  MoveError movePiece(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
+                      int max_retry_attempts = 0) {
     LOG_BOARD("movePiece: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
 
     if (getPiece(fromX, fromY) == PIECE_NONE) return MoveError::NO_PIECE_AT_SOURCE;
@@ -569,19 +570,19 @@ public:
 
       if (obstX1st <= obstY1st) {
         // X first, then Y
-        MoveError err = moveOrthogonalClearing(fromX, fromY, toX, fromY);
+        MoveError err = moveOrthogonalClearing(fromX, fromY, toX, fromY, 0, max_retry_attempts);
         if (err != MoveError::NONE) return err;
-        return moveOrthogonalClearing(toX, fromY, toX, toY);
+        return moveOrthogonalClearing(toX, fromY, toX, toY, 0, max_retry_attempts);
       } else {
         // Y first, then X
-        MoveError err = moveOrthogonalClearing(fromX, fromY, fromX, toY);
+        MoveError err = moveOrthogonalClearing(fromX, fromY, fromX, toY, 0, max_retry_attempts);
         if (err != MoveError::NONE) return err;
-        return moveOrthogonalClearing(fromX, toY, toX, toY);
+        return moveOrthogonalClearing(fromX, toY, toX, toY, 0, max_retry_attempts);
       }
     }
 
     // Simple orthogonal move
-    return moveOrthogonalClearing(fromX, fromY, toX, toY);
+    return moveOrthogonalClearing(fromX, fromY, toX, toY, 0, max_retry_attempts);
   }
 
   // Kill a piece by moving it to the graveyard
@@ -635,7 +636,8 @@ private:
   }
 
   // Move orthogonally, clearing any blocking pieces out of the way
-  MoveError moveOrthogonalClearing(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY, int depth = 0) {
+  MoveError moveOrthogonalClearing(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
+                                   int depth = 0, int max_retry_attempts = 0) {
     if (depth > MAX_CLEAR_DEPTH) {
       LOG_BOARD("moveOrthogonalClearing: max depth exceeded");
       return MoveError::COIL_FAILURE;
@@ -698,7 +700,7 @@ private:
       }
 
       // Recursively clear and move the blocker
-      MoveError err = moveOrthogonalClearing(bx, by, tx, ty, depth + 1);
+      MoveError err = moveOrthogonalClearing(bx, by, tx, ty, depth + 1, max_retry_attempts);
       if (err != MoveError::NONE) {
         // Move displaced pieces back before failing
         for (int j = ndisp - 1; j >= 0; j--) {
@@ -710,7 +712,9 @@ private:
     }
 
     // Path is clear — execute the main move
-    MoveError err = atomicMove(fromX, fromY, toX, toY);
+    MoveError err = use_physics_moves_
+      ? movePhysicsOrthogonal(fromX, fromY, toX, toY, false, max_retry_attempts)
+      : moveDumbOrthogonal(fromX, fromY, toX, toY, true);
 
     // Move displaced pieces back (in reverse order)
     for (int j = ndisp - 1; j >= 0; j--) {
