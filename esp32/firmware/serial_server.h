@@ -49,7 +49,7 @@ inline String handleMoveDumb(Board& board, const String& params) {
   MoveError err = board.moveDumbOrthogonal(fromX, fromY, toX, toY);
   return Json()
     .add("success", err == MoveError::NONE)
-    .add("error", toJson(err))
+    .add("error", err)
     .build();
 }
 
@@ -76,6 +76,12 @@ inline PhysicsParams parsePhysicsParams(const String& params) {
   if ((v = jsonGet(params, "mu_kinetic")).length())           p.mu_kinetic = v.toFloat();
   if ((v = jsonGet(params, "target_velocity_mm_s")).length()) p.target_velocity_mm_s = v.toFloat();
   if ((v = jsonGet(params, "target_accel_mm_s2")).length())   p.target_accel_mm_s2 = v.toFloat();
+  if ((v = jsonGet(params, "max_jerk_mm_s3")).length())      p.max_jerk_mm_s3 = v.toFloat();
+  if ((v = jsonGet(params, "active_brake")).length())         p.active_brake = (v == "true" || v == "1");
+  if ((v = jsonGet(params, "pwm_freq_hz")).length())          p.pwm_freq_hz = v.toInt();
+  if ((v = jsonGet(params, "pwm_compensation")).length())    p.pwm_compensation = v.toFloat();
+  if ((v = jsonGet(params, "all_coils_equal")).length())     p.all_coils_equal = (v == "true" || v == "1");
+  if ((v = jsonGet(params, "force_scale")).length())         p.force_scale = v.toFloat();
   if ((v = jsonGet(params, "max_duration_ms")).length())      p.max_duration_ms = v.toInt();
   return p;
 }

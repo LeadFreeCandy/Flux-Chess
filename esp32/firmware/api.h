@@ -131,7 +131,7 @@ struct MoveDumbRequest {
 struct MoveResponse {
   bool success;
   MoveError error;
-  String toJson() const { return Json().add("success", success).add("error", ::toJson(error)).build(); }
+  String toJson() const { return Json().add("success", success).add("error", error).build(); }
 };
 
 struct MovePhysicsRequest {
@@ -145,6 +145,12 @@ struct MovePhysicsRequest {
   float mu_kinetic;
   float target_velocity_mm_s;
   float target_accel_mm_s2;
+  float max_jerk_mm_s3;
+  bool active_brake;
+  uint16_t pwm_freq_hz;
+  float pwm_compensation;
+  bool all_coils_equal;
+  float force_scale;
   uint16_t max_duration_ms;
 };
 

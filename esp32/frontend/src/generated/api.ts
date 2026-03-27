@@ -86,6 +86,12 @@ export interface MovePhysicsRequest {
   mu_kinetic: number;
   target_velocity_mm_s: number;
   target_accel_mm_s2: number;
+  max_jerk_mm_s3: number;
+  active_brake: boolean;
+  pwm_freq_hz: number;
+  pwm_compensation: number;
+  all_coils_equal: boolean;
+  force_scale: number;
   max_duration_ms: number;
 }
 

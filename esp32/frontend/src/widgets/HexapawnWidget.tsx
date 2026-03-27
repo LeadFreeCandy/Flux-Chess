@@ -20,6 +20,12 @@ const DEFAULT_PHYSICS_PARAMS = {
   mu_kinetic: 0.25,
   target_velocity_mm_s: 100,
   target_accel_mm_s2: 500,
+  max_jerk_mm_s3: 50000,
+  active_brake: true,
+  pwm_freq_hz: 20000,
+  pwm_compensation: 0.2,
+  all_coils_equal: false,
+  force_scale: 1.0,
   max_duration_ms: 5000,
 };
 
@@ -30,6 +36,10 @@ const PARAM_INFO: Record<keyof typeof DEFAULT_PHYSICS_PARAMS, string> = {
   mu_kinetic:            "kinetic mu",
   target_velocity_mm_s:  "target v (mm/s)",
   target_accel_mm_s2:    "target a (mm/s\u00B2)",
+  max_jerk_mm_s3:        "max jerk (mm/s\u00B3)",
+  pwm_freq_hz:           "PWM freq (Hz)",
+  pwm_compensation:      "PWM comp (0-1)",
+  force_scale:           "force scale",
   max_duration_ms:       "timeout (ms)",
 };
 
@@ -46,7 +56,21 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
   const [isMoving, setIsMoving] = useState(false);
   const [usePhysics, setUsePhysics] = useState(false);
   const [showParams, setShowParams] = useState(false);
-  const [physicsParams, setPhysicsParams] = useState(DEFAULT_PHYSICS_PARAMS);
+  const [physicsParams, setPhysicsParamsRaw] = useState(() => {
+    try {
+      const saved = localStorage.getItem('fluxchess_physics_params');
+      if (saved) return { ...DEFAULT_PHYSICS_PARAMS, ...JSON.parse(saved) };
+    } catch {}
+    return DEFAULT_PHYSICS_PARAMS;
+  });
+
+  const setPhysicsParams = (val: typeof DEFAULT_PHYSICS_PARAMS | ((prev: typeof DEFAULT_PHYSICS_PARAMS) => typeof DEFAULT_PHYSICS_PARAMS)) => {
+    setPhysicsParamsRaw((prev: typeof DEFAULT_PHYSICS_PARAMS) => {
+      const next = typeof val === "function" ? val(prev) : val;
+      localStorage.setItem('fluxchess_physics_params', JSON.stringify(next));
+      return next;
+    });
+  };
   const [simPos, setSimPos] = useState<{ x: number; y: number } | null>(null);
 
   // Listen for simulated position updates from MoveTestWidget
@@ -59,16 +83,6 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
     return () => window.removeEventListener("fluxchess-sim-pos", handler);
   }, []);
 
-  useEffect(() => {
-    const saved = localStorage.getItem('fluxchess_physics_params');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setPhysicsParams(p => ({ ...p, ...parsed }));
-        localStorage.removeItem('fluxchess_physics_params');  // consume once
-      } catch {}
-    }
-  }, []);
 
   const fetchBoard = async () => {
     try {
@@ -158,18 +172,32 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
           width: "100%", maxWidth: 400, marginBottom: 8,
           background: "#151525", padding: 10, borderRadius: 6, border: "1px solid #2a2a4a",
         }}>
-          {(Object.entries(PARAM_INFO) as [keyof typeof DEFAULT_PHYSICS_PARAMS, string][]).map(([key, label]) => (
+          <label style={labelStyle}>
+            active brake
+            <input type="checkbox" checked={!!physicsParams.active_brake}
+              onChange={e => setPhysicsParams(p => ({ ...p, active_brake: e.target.checked }))} />
+          </label>
+          <label style={labelStyle}>
+            all coils equal
+            <input type="checkbox" checked={!!physicsParams.all_coils_equal}
+              onChange={e => setPhysicsParams(p => ({ ...p, all_coils_equal: e.target.checked }))} />
+          </label>
+          {(Object.entries(PARAM_INFO) as [keyof typeof PARAM_INFO, string][]).map(([key, label]) => (
             <label key={key} style={labelStyle}>
               {label}
               <input
                 type="number"
-                step={key === 'max_duration_ms' ? 1 : (key === 'mu_static' || key === 'mu_kinetic') ? 0.01 : (key === 'target_velocity_mm_s' || key === 'target_accel_mm_s2') ? 1 : 0.1}
-                value={physicsParams[key]}
+                step={key === 'max_duration_ms' || key === 'pwm_freq_hz' ? 1000 : (key === 'mu_static' || key === 'mu_kinetic' || key === 'pwm_compensation') ? 0.05 : (key === 'target_velocity_mm_s' || key === 'target_accel_mm_s2') ? 1 : 0.1}
+                value={physicsParams[key] as number}
                 onChange={e => updateParam(key, e.target.value)}
                 style={{ ...inputStyle, width: 70 }}
               />
             </label>
           ))}
+          <button onClick={() => setPhysicsParams(DEFAULT_PHYSICS_PARAMS)}
+            style={{ ...btnStyle, background: "#2a2a4a", border: "1px solid #3a3a5a", fontSize: 10, gridColumn: "1 / -1" }}>
+            Reset Defaults
+          </button>
         </div>
       )}
 

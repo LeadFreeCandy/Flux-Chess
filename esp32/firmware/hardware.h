@@ -32,7 +32,7 @@ public:
       pinMode(HALL_PINS[i], INPUT);
     }
 
-    analogWriteFrequency(PIN_SR_OE, 10000); // 10kHz PWM for OE
+    analogWriteFrequency(PIN_SR_OE, 20000); // 20kHz — just above audible range
 
     pinMode(PIN_DC1, INPUT);
     pinMode(PIN_DC2, INPUT);
@@ -50,6 +50,12 @@ public:
 
     LOG_HW("init: SPI CLK=%d DATA=%d, %d SRs, %d sensors, watchdog started",
             PIN_SR_CLOCK, PIN_SR_DATA, NUM_SHIFT_REGISTERS, NUM_HALL_SENSORS);
+  }
+
+  // ── PWM Frequency ──────────────────────────────────────────
+
+  void setPwmFrequency(uint16_t freq_hz) {
+    analogWriteFrequency(PIN_SR_OE, freq_hz);
   }
 
   // ── Hall Sensors ──────────────────────────────────────────

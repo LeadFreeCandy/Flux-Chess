@@ -28,7 +28,12 @@ struct PhysicsParams {
   float mu_kinetic         = 0.25f;
   float target_velocity_mm_s = 100.0f;
   float target_accel_mm_s2   = 500.0f;
+  float max_jerk_mm_s3       = 50000.0f; // rate of change of acceleration (mm/s³)
   bool  active_brake       = true;
+  uint16_t pwm_freq_hz     = 20000;
+  float pwm_compensation   = 0.2f;  // 0=ideal PWM, 1=always full on. Accounts for MOSFET gate RC
+  bool  all_coils_equal    = false; // ignore layer differences, use layer 0 (closest) for all
+  float force_scale        = 1.0f;  // multiplier on force table values (tune sim vs reality gap)
   uint16_t max_duration_ms = 5000;
 };
 
@@ -57,10 +62,13 @@ public:
     int8_t activeBit = coordToBit((uint8_t)(path_mm[0][0] / GRID_TO_MM + 0.5f),
                                    (uint8_t)(path_mm[0][1] / GRID_TO_MM + 0.5f));
     if (activeBit < 0) return MoveError::COIL_FAILURE;
-    int activeLayer = bitToLayer(activeBit);
+    int activeLayer = params.all_coils_equal ? 0 : bitToLayer(activeBit);
 
     float weight_mN = params.piece_mass_g * 9.81f;
     float mass_kg = params.piece_mass_g * 1e-3f;
+
+    // Set PWM frequency from params
+    hw_.setPwmFrequency(params.pwm_freq_hz);
 
     if (!hw_.startCoil((uint8_t)activeBit, 255)) return MoveError::COIL_FAILURE;
 
@@ -74,25 +82,34 @@ public:
     int coil_switches = 0;
     bool braked = false;
     bool coasting = false;  // true after coil cut for stopping
+    unsigned long brake_start_ms = 0;
+    float last_accel = 0;  // for jerk limiting
+    static constexpr unsigned long BRAKE_HOLD_MS = 200;
 
     LOG_BOARD("physics: start path_len=%d from=(%.1f,%.1f) to=(%.1f,%.1f) mm",
               path_len, piece.x, piece.y, path_mm[path_len-1][0], path_mm[path_len-1][1]);
 
     while (millis() - t0 < params.max_duration_ms) {
-      // 1. dt
+      // 1. dt — enforce minimum 10ms tick (100Hz)
       unsigned long now_us = micros();
-      float dt = (now_us - last_tick_us) / 1000000.0f;
+      unsigned long elapsed_us = now_us - last_tick_us;
+      if (elapsed_us < 10000) {
+        delayMicroseconds(10000 - elapsed_us);
+        now_us = micros();
+        elapsed_us = now_us - last_tick_us;
+      }
+      float dt = elapsed_us / 1000000.0f;
       last_tick_us = now_us;
-      if (dt <= 0 || dt > 0.1f) dt = 0.001f;
+      if (dt > 0.1f) dt = 0.001f;
 
       // 2. Offset from active coil in mm
       float off_x = piece.x - cx;
       float off_y = piece.y - cy;
 
       // 3. Force table lookup (mN at 1A)
-      float fx_1a = tableForceFx(activeLayer, off_x, off_y);
-      float fy_1a = tableForceFy(activeLayer, off_x, off_y);
-      float fz_1a = tableForceFz(activeLayer, off_x, off_y);
+      float fx_1a = tableForceFx(activeLayer, off_x, off_y) * params.force_scale;
+      float fy_1a = tableForceFy(activeLayer, off_x, off_y) * params.force_scale;
+      float fz_1a = tableForceFz(activeLayer, off_x, off_y) * params.force_scale;
 
       float speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
       float v_along = (moveX ? piece.vx : piece.vy) * move_sign;
@@ -112,7 +129,7 @@ public:
           last_tick_us = micros();
           LOG_BOARD("physics: unstuck (F=%.1f > fric=%.1f mN)", avail, static_fric);
         } else {
-          if (!hw_.sustainCoil((uint8_t)activeBit, 100, last_duty)) {
+          if (!hw_.sustainCoil((uint8_t)activeBit, 0, last_duty)) {
             hw_.stopCoil((uint8_t)activeBit);
             return MoveError::COIL_FAILURE;
           }
@@ -151,33 +168,52 @@ public:
         float stopping_dist = (brake_decel > 0.01f) ? (v_along * v_along) / (2.0f * brake_decel) : 9999.0f;
 
         if (coil_idx == path_len - 1 && v_along > 0 && stopping_dist >= dist_remain) {
-          // Time to stop
+          // Time to stop — cut current coil, then hold destination coil on
           coasting = true;
-          hw_.stopCoil((uint8_t)activeBit);
 
-          if (params.active_brake && coil_idx > 0) {
-            int8_t prevBit = coordToBit((uint8_t)(path_mm[coil_idx-1][0] / GRID_TO_MM + 0.5f),
-                                        (uint8_t)(path_mm[coil_idx-1][1] / GRID_TO_MM + 0.5f));
-            if (prevBit >= 0) {
-              hw_.startCoil((uint8_t)prevBit, 255);
-              activeBit = prevBit;
-              activeLayer = bitToLayer(prevBit);
-              braked = true;
-              LOG_BOARD("physics: braking at v=%.1f dist_remain=%.1f stop_dist=%.1f",
-                        v_along, dist_remain, stopping_dist);
+          if (params.active_brake) {
+            // Activate the destination coil — its centering force holds the piece
+            int8_t destBit = coordToBit((uint8_t)(path_mm[path_len-1][0] / GRID_TO_MM + 0.5f),
+                                        (uint8_t)(path_mm[path_len-1][1] / GRID_TO_MM + 0.5f));
+            if (destBit >= 0 && destBit != activeBit) {
+              hw_.stopCoil((uint8_t)activeBit);
+              hw_.startCoil((uint8_t)destBit, 255);
+              activeBit = destBit;
+              activeLayer = params.all_coils_equal ? 0 : bitToLayer(destBit);
             }
+            // If already on dest coil, just keep it on
+            braked = true;
+            brake_start_ms = millis();
+            cx = path_mm[path_len-1][0];
+            cy = path_mm[path_len-1][1];
+            LOG_BOARD("physics: holding dest coil at v=%.1f dist_remain=%.1f",
+                      v_along, dist_remain);
           } else {
+            hw_.stopCoil((uint8_t)activeBit);
             LOG_BOARD("physics: coasting at v=%.1f dist_remain=%.1f", v_along, dist_remain);
           }
         }
       }
 
       if (coasting) {
-        // Coasting/braking — friction + optional brake coil
+        // Cut hold coil after timeout
+        if (braked && (millis() - brake_start_ms > BRAKE_HOLD_MS)) {
+          hw_.stopCoil((uint8_t)activeBit);
+          braked = false;
+          LOG_BOARD("physics: hold released after %lums", BRAKE_HOLD_MS);
+        }
+
+        // Coasting — friction + optional destination coil hold
         if (braked) {
-          fx = tableForceFx(activeLayer, piece.x - cx, piece.y - cy) * params.max_current_a;
-          fy = tableForceFy(activeLayer, piece.x - cx, piece.y - cy) * params.max_current_a;
-          // cx/cy here is the brake coil, which pulls backwards — that's correct
+          // Destination coil centering force pulls piece to target
+          float hold_off_x = piece.x - cx;
+          float hold_off_y = piece.y - cy;
+          fx = tableForceFx(activeLayer, hold_off_x, hold_off_y) * params.force_scale * params.max_current_a;
+          fy = tableForceFy(activeLayer, hold_off_x, hold_off_y) * params.force_scale * params.max_current_a;
+          fz_1a = tableForceFz(activeLayer, hold_off_x, hold_off_y) * params.force_scale;
+          // Update normal force for friction with hold coil active
+          normal_mN = weight_mN + fz_1a * params.max_current_a;
+          if (normal_mN < 0) normal_mN = 0;
         } else {
           fx = 0; fy = 0;
         }
@@ -186,6 +222,14 @@ public:
         // 7. Controller: desired force → current → duty
         float speed_error = params.target_velocity_mm_s - v_along;
         float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2), params.target_accel_mm_s2);
+
+        // Jerk limit: clamp rate of change of acceleration
+        float max_da = params.max_jerk_mm_s3 * dt;
+        float da = desired_accel - last_accel;
+        if (da > max_da) desired_accel = last_accel + max_da;
+        else if (da < -max_da) desired_accel = last_accel - max_da;
+        last_accel = desired_accel;
+
         float desired_force = mass_kg * desired_accel + friction_mN;
         if (desired_force < 0) desired_force = 0;
 
@@ -194,8 +238,16 @@ public:
         required_current = fminf(required_current, params.max_current_a);
         if (required_current < 0) required_current = 0;
 
-        duty = (uint8_t)(required_current / params.max_current_a * 255.0f);
-        float actual_current = (duty / 255.0f) * params.max_current_a;
+        // Compute raw duty accounting for PWM compensation
+        // effective = raw + (255 - raw) * comp → raw = (effective - 255*comp) / (1 - comp)
+        float desired_eff_duty = required_current / params.max_current_a * 255.0f;
+        float comp = params.pwm_compensation;
+        float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 255.0f * comp) / (1.0f - comp) : 0;
+        if (raw_duty < 0) raw_duty = 0;
+        if (raw_duty > 255) raw_duty = 255;
+        duty = (uint8_t)raw_duty;
+        float eff_duty = duty + (255.0f - duty) * comp;
+        float actual_current = (eff_duty / 255.0f) * params.max_current_a;
         last_current = actual_current;
 
         fx = fx_1a * actual_current;
@@ -226,9 +278,9 @@ public:
       piece.x += piece.vx * dt;
       piece.y += piece.vy * dt;
 
-      // Debug log every 100ms
+      // Debug log every 10ms
       unsigned long elapsed = millis() - t0;
-      if (elapsed / 100 != (elapsed - 1) / 100) {
+      if (elapsed / 10 != (elapsed - 1) / 10) {
         LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
                   elapsed, piece.x, piece.y, piece.vx, piece.vy, duty,
                   coasting ? (braked ? "BRAKE" : "COAST") : "");
@@ -252,7 +304,7 @@ public:
 
           hw_.stopCoil((uint8_t)activeBit);
           activeBit = newBit;
-          activeLayer = bitToLayer(newBit);
+          activeLayer = params.all_coils_equal ? 0 : bitToLayer(newBit);
           hw_.startCoil((uint8_t)activeBit, 255);
           last_duty = 255;
           coil_switches++;
@@ -290,16 +342,14 @@ public:
         return MoveError::NONE;
       }
 
-      // Sustain
+      // Update PWM (coil stays on between ticks, 1ms min tick enforced above)
       if (!coasting) {
-        if (!hw_.sustainCoil((uint8_t)activeBit, 100, last_duty)) {
+        if (!hw_.sustainCoil((uint8_t)activeBit, 0, last_duty)) {
           hw_.stopCoil((uint8_t)activeBit);
           return MoveError::COIL_FAILURE;
         }
       } else if (braked) {
-        hw_.sustainCoil((uint8_t)activeBit, 100, 255);
-      } else {
-        delayMicroseconds(100);
+        hw_.sustainCoil((uint8_t)activeBit, 0, 255);
       }
     }
 
@@ -332,7 +382,8 @@ private:
     return (int8_t)(sr_index * 8 + local_bit);
   }
 
-  static constexpr int BIT_TO_LAYER[] = {2, 1, 0, 3, 4};
+  // bit 0=(2,0)→L3, bit 1=(1,0)→L4, bit 2=(0,0)→L0, bit 3=(0,1)→L2, bit 4=(0,2)→L1
+  static constexpr int BIT_TO_LAYER[] = {3, 4, 0, 2, 1};
 
   static int bitToLayer(uint8_t global_bit) {
     uint8_t local = global_bit % 8;
