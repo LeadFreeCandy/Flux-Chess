@@ -53,22 +53,37 @@ inline String handleMoveDumb(Board& board, const String& params) {
     .build();
 }
 
-
-inline PhysicsParams parsePhysicsParams(const String& params);
-
 inline String handleMovePhysics(Board& board, const String& params) {
   uint8_t fromX = jsonGet(params, "from_x").toInt();
   uint8_t fromY = jsonGet(params, "from_y").toInt();
   uint8_t toX = jsonGet(params, "to_x").toInt();
   uint8_t toY = jsonGet(params, "to_y").toInt();
-  PhysicsParams p = parsePhysicsParams(params);
-  MoveError err = board.movePhysicsOrthogonal(fromX, fromY, toX, toY, p);
-  MoveResponse res = { err == MoveError::NONE, err };
+  int maxRetries = jsonGet(params, "max_retries").toInt();  // defaults to 0 if absent
+  MoveDiag diag;
+  MoveError err = board.movePhysicsOrthogonal(fromX, fromY, toX, toY, false, maxRetries, &diag);
+  MoveResponse res;
+  res.success = (err == MoveError::NONE);
+  res.error = err;
+  res.has_diag = true;
+  res.diag = diag;
   return res.toJson();
 }
 
-inline PhysicsParams parsePhysicsParams(const String& params) {
-  PhysicsParams p;
+inline String handleMovePiece(Board& board, const String& params) {
+  uint8_t fromX = jsonGet(params, "from_x").toInt();
+  uint8_t fromY = jsonGet(params, "from_y").toInt();
+  uint8_t toX = jsonGet(params, "to_x").toInt();
+  uint8_t toY = jsonGet(params, "to_y").toInt();
+  int maxRetries = jsonGet(params, "max_retries").toInt();
+  MoveError err = board.movePiece(fromX, fromY, toX, toY, maxRetries);
+  MoveResponse res;
+  res.success = (err == MoveError::NONE);
+  res.error = err;
+  return res.toJson();
+}
+
+inline String handleSetPhysicsParams(Board& board, const String& params) {
+  PhysicsParams p = board.getPhysicsParams();
   String v;
   if ((v = jsonGet(params, "piece_mass_g")).length())         p.piece_mass_g = v.toFloat();
   if ((v = jsonGet(params, "max_current_a")).length())        p.max_current_a = v.toFloat();
@@ -76,14 +91,27 @@ inline PhysicsParams parsePhysicsParams(const String& params) {
   if ((v = jsonGet(params, "mu_kinetic")).length())           p.mu_kinetic = v.toFloat();
   if ((v = jsonGet(params, "target_velocity_mm_s")).length()) p.target_velocity_mm_s = v.toFloat();
   if ((v = jsonGet(params, "target_accel_mm_s2")).length())   p.target_accel_mm_s2 = v.toFloat();
-  if ((v = jsonGet(params, "max_jerk_mm_s3")).length())      p.max_jerk_mm_s3 = v.toFloat();
-  if ((v = jsonGet(params, "active_brake")).length())         p.active_brake = (v == "true" || v == "1");
+  if ((v = jsonGet(params, "max_jerk_mm_s3")).length())       p.max_jerk_mm_s3 = v.toFloat();
+  if ((v = jsonGet(params, "coast_friction_offset")).length()) p.coast_friction_offset = v.toFloat();
+  if ((v = jsonGet(params, "brake_pulse_ms")).length())       p.brake_pulse_ms = v.toInt();
   if ((v = jsonGet(params, "pwm_freq_hz")).length())          p.pwm_freq_hz = v.toInt();
-  if ((v = jsonGet(params, "pwm_compensation")).length())    p.pwm_compensation = v.toFloat();
-  if ((v = jsonGet(params, "all_coils_equal")).length())     p.all_coils_equal = (v == "true" || v == "1");
-  if ((v = jsonGet(params, "force_scale")).length())         p.force_scale = v.toFloat();
+  if ((v = jsonGet(params, "pwm_compensation")).length())     p.pwm_compensation = v.toFloat();
+  if ((v = jsonGet(params, "all_coils_equal")).length())      p.all_coils_equal = (v == "true" || v == "1");
+  if ((v = jsonGet(params, "force_scale")).length())          p.force_scale = v.toFloat();
   if ((v = jsonGet(params, "max_duration_ms")).length())      p.max_duration_ms = v.toInt();
-  return p;
+  board.setPhysicsParams(p);
+  return board.physicsParamsToJson();
+}
+
+inline String handleGetPhysicsParams(Board& board, const String&) {
+  return board.physicsParamsToJson();
+}
+
+inline String handleHexapawnPlay(Board& board, const String& params) {
+  uint16_t hint_ms = 0;
+  String v = jsonGet(params, "hint_pulse_ms");
+  if (v.length()) hint_ms = v.toInt();
+  return board.hexapawnPlay(hint_ms);
 }
 
 inline String handleTunePhysics(Board& board, const String& params) {
@@ -112,7 +140,11 @@ public:
     on("set_piece", handleSetPiece);
     on("move_dumb", handleMoveDumb);
     on("move_physics", handleMovePhysics);
+    on("move_piece", handleMovePiece);
+    on("set_physics_params", handleSetPhysicsParams);
+    on("get_physics_params", handleGetPhysicsParams);
     on("tune_physics", handleTunePhysics);
+    on("hexapawn_play", handleHexapawnPlay);
     on("set_rgb", handleSetRGB);
     on("calibrate", handleCalibrate);
     on("get_calibration", handleGetCalibration);
