@@ -70,23 +70,16 @@ export interface MoveDumbRequest {
   to_y: number;
 }
 
-export interface CoilDiag {
-  sensor: number;
-  min: number;
-  detected: boolean;
-  arrival: number;
-}
+export type CoilDiag = Record<string, never>;
 
 export interface MoveDiag {
-  checkpoint_ok: boolean;
-  retries_used: number;
   coils: CoilDiag[];
 }
 
 export interface MoveResponse {
   success: boolean;
   error: any;
-  diag?: MoveDiag;
+  diag: MoveDiag;
 }
 
 export interface MovePhysicsRequest {
@@ -94,15 +87,6 @@ export interface MovePhysicsRequest {
   from_y: number;
   to_x: number;
   to_y: number;
-  max_retries?: number;
-}
-
-export interface MovePieceRequest {
-  from_x: number;
-  from_y: number;
-  to_x: number;
-  to_y: number;
-  max_retries?: number;
 }
 
 export interface SetPhysicsParamsRequest {
@@ -167,7 +151,7 @@ export function movePhysics(params: MovePhysicsRequest): Promise<MoveResponse> {
   return transport.call("move_physics", params);
 }
 
-export function movePiece(params: MovePieceRequest): Promise<MoveResponse> {
+export function movePiece(params: MoveDumbRequest): Promise<MoveResponse> {
   return transport.call("move_piece", params);
 }
 

@@ -22,7 +22,7 @@ struct PieceState {
 };
 
 struct PhysicsParams {
-  float piece_mass_g       = 4.3f;
+  float piece_mass_g       = 2.7f;
   float max_current_a      = 1.0f;
   float mu_static          = 0.35f;
   float mu_kinetic         = 0.25f;

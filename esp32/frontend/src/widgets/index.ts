@@ -6,14 +6,14 @@ import CalibrationWidget from "./CalibrationWidget";
 import HexapawnWidget from "./HexapawnWidget";
 import SpacedCoilsWidget from "./SpacedCoilsWidget";
 import MoveTestWidget from "./MoveTestWidget";
-import TuneWidget from "./TuneWidget";
+import PhysicsSettingsWidget from "./PhysicsSettingsWidget";
 
 export const WIDGET_REGISTRY = {
   surface: { title: "Magnetic Field", Component: SurfaceWidget },
   coils: { title: "Coil Grid", Component: CoilsWidget },
   calibration: { title: "Calibration", Component: CalibrationWidget },
   hexapawn: { title: "Hexapawn Game", Component: HexapawnWidget },
-  tune: { title: "Physics Tuner", Component: TuneWidget },
+  physics_settings: { title: "Physics Settings", Component: PhysicsSettingsWidget },
   move_test: { title: "Move Test", Component: MoveTestWidget },
   rgb: { title: "RGB Underglow", Component: RgbWidget },
   serial: { title: "Serial Console", Component: SerialWidget },

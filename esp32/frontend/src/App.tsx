@@ -11,15 +11,12 @@ function App() {
   const [status, setStatus] = useState("Connected");
   
   // Track both the active widgets and their current size/layout state
-  const [layout, setLayout] = useState<WidgetConfig[]>([
-    { id: "surface", size: "half" },
-    { id: "hexapawn", size: "half" },
-    { id: "calibration", size: "half" },
-    { id: "coils", size: "half" },
-    { id: "spaced_coils", size: "half" },
-    { id: "rgb", size: "half" },
-    { id: "serial", size: "full" }, // Serial defaults to full width on the bottom
-  ]);
+  const [layout, setLayout] = useState<WidgetConfig[]>(
+    (Object.keys(WIDGET_REGISTRY) as WidgetId[]).map(id => ({
+      id,
+      size: id === "serial" ? "full" as const : "half" as const,
+    }))
+  );
 
   const activeIds = layout.map(w => w.id);
 
