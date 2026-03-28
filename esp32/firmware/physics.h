@@ -102,6 +102,8 @@ public:
     static constexpr float CENTERED_SPEED_MM_S = 10.0f;  // after centering pulse, done when below this
     static constexpr float SPEED_CLAMP_FACTOR = 1.5f;    // clamp velocity to target * this
 
+    unsigned long last_log_ms = 0;
+
     // Sensor diagnostic tracking
     if (diag) {
       diag->num_coils = (uint8_t)fminf(path_len, MAX_DIAG_COILS);
@@ -117,11 +119,11 @@ public:
               path_len, piece.x, piece.y, path_mm[path_len-1][0], path_mm[path_len-1][1]);
 
     while (millis() - t0 < params.max_duration_ms) {
-      // 1. dt — enforce minimum 10ms tick (100Hz)
+      // 1. dt — enforce minimum 1ms tick (1kHz)
       unsigned long now_us = micros();
       unsigned long elapsed_us = now_us - last_tick_us;
-      if (elapsed_us < 10000) {
-        unsigned long deadline_us = last_tick_us + 10000;
+      if (elapsed_us < 1000) {
+        unsigned long deadline_us = last_tick_us + 1000;
         // Sample path sensors as fast as possible in the dead time
         while (micros() < deadline_us) {
           if (diag && path_sensors && num_path_sensors > 0) {
@@ -139,7 +141,7 @@ public:
       }
       float dt = elapsed_us / 1000000.0f;
       last_tick_us = now_us;
-      if (dt > 0.05f) dt = 0.05f;  // cap at 50ms to prevent huge jumps, but don't shrink
+      if (dt > 0.005f) dt = 0.005f;  // cap at 5ms to prevent huge jumps
 
       // 2. Offset from active coil in mm
       float off_x = piece.x - cx;
@@ -284,12 +286,17 @@ public:
       piece.x += piece.vx * dt;
       piece.y += piece.vy * dt;
 
-      // Debug log every tick
+      // Debug log every 10ms (every 10th tick at 1kHz)
       {
         unsigned long elapsed = millis() - t0;
-        LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
-                  elapsed, piece.x, piece.y, piece.vx, piece.vy, duty,
-                  coasting ? (braked ? "BRAKE" : "COAST") : "");
+        if (elapsed != last_log_ms) {
+          last_log_ms = elapsed;
+          if (elapsed % 10 == 0) {
+            LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
+                      elapsed, piece.x, piece.y, piece.vx, piece.vy, duty,
+                      coasting ? (braked ? "BRAKE" : "COAST") : "");
+          }
+        }
       }
 
       // 11. Coil switching — switch when next coil produces greater forward acceleration
