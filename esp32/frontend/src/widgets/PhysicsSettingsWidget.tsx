@@ -17,6 +17,7 @@ const DEFAULT_PARAMS = {
   all_coils_equal: false,
   force_scale: 1.0,
   max_duration_ms: 5000,
+  max_retry_attempts: 0,
 };
 
 const PARAM_LABELS: Record<string, string> = {
@@ -33,6 +34,7 @@ const PARAM_LABELS: Record<string, string> = {
   pwm_compensation:     "PWM comp (0-1)",
   force_scale:          "force scale",
   max_duration_ms:      "timeout (ms)",
+  max_retry_attempts:   "max retries",
 };
 
 const STEP_MAP: Record<string, number> = {
@@ -41,6 +43,7 @@ const STEP_MAP: Record<string, number> = {
   target_velocity_mm_s: 50, target_accel_mm_s2: 100, max_jerk_mm_s3: 1000,
   piece_mass_g: 0.1, max_current_a: 0.1, coast_friction_offset: 0.05,
   force_scale: 0.1,
+  max_retry_attempts: 1,
 };
 
 export default function PhysicsSettingsWidget({ onStatus }: WidgetProps) {

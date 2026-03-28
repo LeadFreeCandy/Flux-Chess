@@ -104,6 +104,7 @@ export interface SetPhysicsParamsRequest {
   all_coils_equal: boolean;
   force_scale: number;
   max_duration_ms: number;
+  max_retry_attempts: number;
 }
 
 export const commands = {

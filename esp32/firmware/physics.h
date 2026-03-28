@@ -36,6 +36,7 @@ struct PhysicsParams {
   bool  all_coils_equal    = false; // ignore layer differences, use layer 0 (closest) for all
   float force_scale        = 1.0f;  // multiplier on force table values (tune sim vs reality gap)
   uint16_t max_duration_ms = 5000;
+  uint8_t max_retry_attempts = 0;  // 0=no checkpoint recovery, >0=retry with moveDumb on failure
 };
 
 

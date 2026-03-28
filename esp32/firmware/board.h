@@ -115,9 +115,10 @@ public:
   // ── Physics Orthogonal Move ──────────────────────────────────
 
   MoveError movePhysicsOrthogonal(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
-                                  bool skipValidation = false, int max_retry_attempts = 0,
+                                  bool skipValidation = false, int max_retry_attempts = -1,
                                   MoveDiag* out_diag = nullptr) {
     const PhysicsParams& params = physics_params_;
+    if (max_retry_attempts < 0) max_retry_attempts = params.max_retry_attempts;
     LOG_BOARD("movePhysicsOrthogonal: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
 
     if (fromX >= GRID_COLS || fromY >= GRID_ROWS || toX >= GRID_COLS || toY >= GRID_ROWS)
@@ -150,19 +151,25 @@ public:
       path_len++;
     }
 
-    // Build sensor list and thresholds for path coils
+    // Build sensor list — only at major grid positions (multiples of SR_BLOCK)
+    // where actual Hall sensors exist. Skip duplicates.
     uint8_t path_sensors[MAX_DIAG_COILS];
     float sensor_thresholds[MAX_DIAG_COILS];
     int num_path_sensors = 0;
     {
+      uint8_t last_si = sensorForGrid(fromX, fromY);  // source sensor (don't include)
       int8_t sx = fromX, sy = fromY;
       for (int i = 0; i < path_len && num_path_sensors < MAX_DIAG_COILS; i++) {
         sx += stepX; sy += stepY;
+        // Only add sensor at major grid positions (where sensors physically exist)
+        if (sx % SR_BLOCK != 0 || sy % SR_BLOCK != 0) continue;
         uint8_t si = sensorForGrid(sx, sy);
+        if (si == last_si) continue;  // skip duplicate
         float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2030.0f;
         float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1700.0f;
         path_sensors[num_path_sensors] = si;
         sensor_thresholds[num_path_sensors] = (baseline + piece_mean) / 2.0f;
+        last_si = si;
         num_path_sensors++;
       }
     }
@@ -526,7 +533,7 @@ public:
         // Execute physical move FIRST (movePiece handles captures + path clearing)
         uint8_t gfx = Hexapawn::toGrid(ai.fc), gfy = Hexapawn::toGrid(ai.fr);
         uint8_t gtx = Hexapawn::toGrid(ai.tc), gty = Hexapawn::toGrid(ai.tr);
-        MoveError err = movePiece(gfx, gfy, gtx, gty, 2);
+        MoveError err = movePiece(gfx, gfy, gtx, gty);
         if (err != MoveError::NONE) {
           LOG_BOARD("hexapawn: AI physical move FAILED: %d — applying to game state anyway", (int)err);
         }
@@ -549,7 +556,7 @@ public:
   }
 
   MoveError movePiece(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
-                      int max_retry_attempts = 0) {
+                      int max_retry_attempts = -1) {
     LOG_BOARD("movePiece: (%d,%d) -> (%d,%d)", fromX, fromY, toX, toY);
 
     if (getPiece(fromX, fromY) == PIECE_NONE) return MoveError::NO_PIECE_AT_SOURCE;
@@ -637,7 +644,7 @@ private:
 
   // Move orthogonally, clearing any blocking pieces out of the way
   MoveError moveOrthogonalClearing(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
-                                   int depth = 0, int max_retry_attempts = 0) {
+                                   int depth = 0, int max_retry_attempts = -1) {
     if (depth > MAX_CLEAR_DEPTH) {
       LOG_BOARD("moveOrthogonalClearing: max depth exceeded");
       return MoveError::COIL_FAILURE;
@@ -1156,6 +1163,7 @@ public:
     j += ",\"all_coils_equal\":"; j += p.all_coils_equal ? "true" : "false";
     j += ",\"force_scale\":"; j += String(p.force_scale, 2);
     j += ",\"max_duration_ms\":"; j += String(p.max_duration_ms);
+    j += ",\"max_retry_attempts\":"; j += String(p.max_retry_attempts);
     j += "}";
     return j;
   }
@@ -1207,6 +1215,7 @@ private:
     physics_params_.all_coils_equal    = prefs_.getBool("eq_coil", physics_params_.all_coils_equal);
     physics_params_.force_scale        = prefs_.getFloat("f_scale", physics_params_.force_scale);
     physics_params_.max_duration_ms    = prefs_.getUShort("timeout", physics_params_.max_duration_ms);
+    physics_params_.max_retry_attempts = prefs_.getUChar("retries", physics_params_.max_retry_attempts);
     prefs_.end();
     LOG_BOARD("physics params loaded from NVS (I=%.2fA v=%.0f a=%.0f)",
               physics_params_.max_current_a, physics_params_.target_velocity_mm_s, physics_params_.target_accel_mm_s2);
@@ -1228,6 +1237,7 @@ private:
     prefs_.putBool("eq_coil", physics_params_.all_coils_equal);
     prefs_.putFloat("f_scale", physics_params_.force_scale);
     prefs_.putUShort("timeout", physics_params_.max_duration_ms);
+    prefs_.putUChar("retries", physics_params_.max_retry_attempts);
     prefs_.end();
   }
 
