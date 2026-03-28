@@ -330,6 +330,25 @@ public:
 
     LOG_BOARD("hexapawn: === NEW GAME ===");
 
+    // Center all starting pieces with a pulse on each position
+    if (hint_pulse_ms > 0) {
+      LOG_BOARD("hexapawn: centering pieces...");
+      for (int c = 0; c < HP_SIZE; c++) {
+        // White row (row 0)
+        uint8_t gx = Hexapawn::toGrid(c), gy = Hexapawn::toGrid(0);
+        int8_t bit = coordToBit(gx, gy);
+        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
+        delay(100);
+      }
+      for (int c = 0; c < HP_SIZE; c++) {
+        // Black row (row 2)
+        uint8_t gx = Hexapawn::toGrid(c), gy = Hexapawn::toGrid(2);
+        int8_t bit = coordToBit(gx, gy);
+        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
+        delay(100);
+      }
+    }
+
     // Verify all 6 pieces are on the board
     int detected = 0;
     for (int c = 0; c < HP_SIZE; c++) {

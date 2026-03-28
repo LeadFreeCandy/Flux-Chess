@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { moveDumb, movePhysics, getBoardState, setPiece } from "../generated/api";
+import { movePhysics, getBoardState, setPiece } from "../generated/api";
 import { onSerialLog, type SerialLogEntry } from "../transport";
 import { type WidgetProps, btnStyle } from "./shared";
 
@@ -83,26 +83,23 @@ export default function MoveTestWidget({ onStatus }: WidgetProps) {
       const row1 = postState.raw_strengths.map((col: number[]) => col[1]);
       log(collected, `Sensor row y=3: [${row1.join(", ")}]`);
 
-      // Sweep back
-      log(collected, "--- SWEEP BACK ---");
-      onStatus("Sweeping back...");
+      // Move back with physics
+      log(collected, "--- MOVE BACK ---");
+      onStatus("Moving back...");
+
+      await new Promise(r => setTimeout(r, 200));
 
       try {
         await withTimeout(setPiece({ x: toX, y: 3, id: 1 }), TIMEOUT_MS, "setPiece dest");
         await withTimeout(setPiece({ x: 0, y: 3, id: 0 }), TIMEOUT_MS, "clear start");
       } catch {}
 
-      for (let x = toX; x > 0; x--) {
-        try {
-          await withTimeout(moveDumb({ from_x: x, from_y: 3, to_x: x - 1, to_y: 3 }), TIMEOUT_MS, `sweep ${x}`);
-        } catch (e) {
-          log(collected, `Sweep ${x}->${x-1}: ${e}`);
-          try {
-            await withTimeout(setPiece({ x, y: 3, id: 0 }), TIMEOUT_MS, "clear");
-            await withTimeout(setPiece({ x: x - 1, y: 3, id: 1 }), TIMEOUT_MS, "set");
-          } catch {}
-        }
-      }
+      const backRes = await withTimeout(
+        movePhysics({ from_x: toX, from_y: 3, to_x: 0, to_y: 3 }),
+        8000,
+        "movePhysics back"
+      );
+      log(collected, `Move back: ${backRes.success ? "OK" : "FAILED"}`);
 
       log(collected, "--- DONE ---");
       const finalState = await withTimeout(getBoardState(), TIMEOUT_MS, "final");
