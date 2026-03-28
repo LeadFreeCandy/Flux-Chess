@@ -50,24 +50,33 @@ export default function MoveTestWidget({ onStatus }: WidgetProps) {
     });
 
     try {
-      // Setup: clear all pieces, place one at (0,3)
+      // Setup: place piece at (0,3)
       log(collected, `--- SETUP (0,3) -> (${toX},3) ---`);
-      for (let x = 0; x <= 9; x++) {
-        for (let y = 0; y <= 6; y++) {
-          try { await setPiece({ x, y, id: 0 }); } catch {}
-        }
-      }
       await withTimeout(setPiece({ x: 0, y: 3, id: 1 }), TIMEOUT_MS, "setPiece");
 
-      // Physics move (skip validation)
+      // Physics move
       log(collected, `--- PHYSICS MOVE (0,3) -> (${toX},3) ---`);
       onStatus(`Physics move (0,3) -> (${toX},3)...`);
 
-      const moveRes = await withTimeout(
+      let moveRes = await withTimeout(
         movePhysics({ from_x: 0, from_y: 3, to_x: toX, to_y: 3 }),
         8000,
         "movePhysics"
       );
+
+      // If path blocked, clear board and retry
+      if (!moveRes.success && moveRes.error === 5) {
+        log(collected, "Path blocked — clearing board and retrying");
+        for (let x = 0; x <= 9; x++)
+          for (let y = 0; y <= 6; y++)
+            try { await setPiece({ x, y, id: 0 }); } catch {}
+        await withTimeout(setPiece({ x: 0, y: 3, id: 1 }), TIMEOUT_MS, "setPiece");
+        moveRes = await withTimeout(
+          movePhysics({ from_x: 0, from_y: 3, to_x: toX, to_y: 3 }),
+          8000,
+          "movePhysics retry"
+        );
+      }
 
       const moveOk = moveRes.success;
       log(collected, `--- RESULT: ${moveOk ? "SUCCESS" : "FAILED"} ---`);
@@ -89,12 +98,8 @@ export default function MoveTestWidget({ onStatus }: WidgetProps) {
 
       await new Promise(r => setTimeout(r, 200));
 
-      // Reset board state for return move
-      for (let x = 0; x <= 9; x++) {
-        for (let y = 0; y <= 6; y++) {
-          try { await setPiece({ x, y, id: 0 }); } catch {}
-        }
-      }
+      // Set board state for return move
+      await withTimeout(setPiece({ x: 0, y: 3, id: 0 }), TIMEOUT_MS, "clear start");
       await withTimeout(setPiece({ x: toX, y: 3, id: 1 }), TIMEOUT_MS, "setPiece dest");
 
       const backRes = await withTimeout(

@@ -284,9 +284,9 @@ public:
       piece.x += piece.vx * dt;
       piece.y += piece.vy * dt;
 
-      // Debug log every 10ms
-      unsigned long elapsed = millis() - t0;
-      if (elapsed / 10 != (elapsed - 1) / 10) {
+      // Debug log every tick
+      {
+        unsigned long elapsed = millis() - t0;
         LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
                   elapsed, piece.x, piece.y, piece.vx, piece.vy, duty,
                   coasting ? (braked ? "BRAKE" : "COAST") : "");
