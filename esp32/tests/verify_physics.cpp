@@ -218,7 +218,7 @@ SimResult simulateFirmwarePhysics(PieceState& piece,
     float v_along = (moveX ? piece.vx : piece.vy) * move_sign;
 
     // 4. Dynamic friction
-    float normal_mN = weight_mN + fz_1a * last_current;
+    float normal_mN = weight_mN - fz_1a * last_current;
     if (normal_mN < 0) normal_mN = 0;
     float mu = (piece.stuck || speed < 0.1f) ? params.mu_static : params.mu_kinetic;
     float friction_mN = mu * normal_mN;
@@ -226,7 +226,7 @@ SimResult simulateFirmwarePhysics(PieceState& piece,
     // 5. Static friction check
     if (piece.stuck) {
       float avail = sqrtf(fx_1a * fx_1a + fy_1a * fy_1a) * params.max_current_a;
-      float static_fric = params.mu_static * (weight_mN + fz_1a * params.max_current_a);
+      float static_fric = params.mu_static * fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
       if (avail > fmaxf(static_fric, 0)) {
         piece.stuck = false;
       } else {
@@ -269,7 +269,7 @@ SimResult simulateFirmwarePhysics(PieceState& piece,
     } else {
       // 7. Controller
       float speed_error = params.target_velocity_mm_s - v_along;
-      float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2), params.target_accel_mm_s2);
+      float desired_accel = fminf(fmaxf(speed_error / dt, 0.0f), params.target_accel_mm_s2);
 
       // Jerk limit
       float max_da = params.max_jerk_mm_s3 * dt;
@@ -347,12 +347,28 @@ SimResult simulateFirmwarePhysics(PieceState& piece,
              coasting ? (braked ? "BRAKE" : "COAST") : "");
     }
 
-    // 11. Coil switching
+    // 11. Coil switching — switch when next coil produces greater forward acceleration
     if (!coasting && coil_idx < path_len - 1) {
-      bool passed = moveX
-        ? ((dx > 0 && piece.x > cx + 0.1f) || (dx < 0 && piece.x < cx - 0.1f))
-        : ((dy > 0 && piece.y > cy + 0.1f) || (dy < 0 && piece.y < cy - 0.1f));
-      if (passed) {
+      float next_cx = path_mm[coil_idx + 1][0];
+      float next_cy = path_mm[coil_idx + 1][1];
+      float next_off_x = piece.x - next_cx;
+      float next_off_y = piece.y - next_cy;
+      int nextLayer = params.all_coils_equal ? 0 : layerForCoil(coil_idx + 1);
+
+      float cur_fx_move = moveX ? fx_1a : fy_1a;
+      float cur_forward = cur_fx_move * move_sign * params.max_current_a;
+      float cur_normal = fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
+      float cur_net = cur_forward - params.mu_kinetic * cur_normal;
+
+      float nfx = stubForceFx(nextLayer, next_off_x, next_off_y) * params.force_scale;
+      float nfy = stubForceFy(nextLayer, next_off_x, next_off_y) * params.force_scale;
+      float nfz = stubForceFz(nextLayer, next_off_x, next_off_y) * params.force_scale;
+      float next_fx_move = moveX ? nfx : nfy;
+      float next_forward = next_fx_move * move_sign * params.max_current_a;
+      float next_normal = fmaxf(weight_mN - nfz * params.max_current_a, 0.0f);
+      float next_net = next_forward - params.mu_kinetic * next_normal;
+
+      if (next_net > cur_net) {
         coil_idx++;
         cx = path_mm[coil_idx][0];
         cy = path_mm[coil_idx][1];

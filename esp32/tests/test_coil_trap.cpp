@@ -281,20 +281,44 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
       near_center_ticks = 0;
     }
 
-    // 11. Coil switching
+    // 11. Coil switching — pick whichever coil produces greater forward acceleration
     if (!coasting && coil_idx < path_len - 1) {
-      bool passed = moveX
-        ? ((dx > 0 && piece.x > cx + 0.1f) || (dx < 0 && piece.x < cx - 0.1f))
-        : ((dy > 0 && piece.y > cy + 0.1f) || (dy < 0 && piece.y < cy - 0.1f));
-      if (passed) {
+      float next_cx = path_mm[coil_idx + 1][0];
+      float next_cy = path_mm[coil_idx + 1][1];
+      float next_off_x = piece.x - next_cx;
+      float next_off_y = piece.y - next_cy;
+
+      // Current coil: net forward acceleration
+      float cur_fh = sqrtf(fx_1a * fx_1a + fy_1a * fy_1a); // already computed above at 1A
+      float cur_fz = fz_1a; // already computed
+      float cur_lateral = cur_fh * params.max_current_a;
+      float cur_normal = fmaxf(weight_mN - cur_fz * params.max_current_a, 0.0f);
+      float cur_friction = params.mu_kinetic * cur_normal;
+      // Project lateral force onto move direction
+      float cur_fx_move = moveX ? fx_1a : fy_1a;
+      float cur_forward = cur_fx_move * move_sign * params.max_current_a;
+      float cur_net_accel = (cur_forward - cur_friction) / mass_kg;
+
+      // Next coil: net forward acceleration
+      float next_fx_1a = tableForceFx(0, next_off_x, next_off_y) * params.force_scale;
+      float next_fy_1a = tableForceFy(0, next_off_x, next_off_y) * params.force_scale;
+      float next_fz_1a = tableForceFz(0, next_off_x, next_off_y) * params.force_scale;
+      float next_fx_move = moveX ? next_fx_1a : next_fy_1a;
+      float next_forward = next_fx_move * move_sign * params.max_current_a;
+      float next_normal = fmaxf(weight_mN - next_fz_1a * params.max_current_a, 0.0f);
+      float next_friction = params.mu_kinetic * next_normal;
+      float next_net_accel = (next_forward - next_friction) / mass_kg;
+
+      if (next_net_accel > cur_net_accel) {
         coil_idx++;
-        cx = path_mm[coil_idx][0];
-        cy = path_mm[coil_idx][1];
+        cx = next_cx;
+        cy = next_cy;
         activeLayer = 0;
         last_duty = 255;
         last_current = params.max_current_a;
         coil_switches++;
-        if (verbose) printf("  >>> SWITCH coil %d at (%.1f,%.1f)\n", coil_idx, cx, cy);
+        if (verbose) printf("  >>> SWITCH coil %d at (%.1f,%.1f) cur_accel=%.0f next_accel=%.0f\n",
+                            coil_idx, cx, cy, cur_net_accel, next_net_accel);
       }
     }
 

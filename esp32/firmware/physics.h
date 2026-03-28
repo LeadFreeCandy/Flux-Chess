@@ -292,16 +292,35 @@ public:
                   coasting ? (braked ? "BRAKE" : "COAST") : "");
       }
 
-      // 11. Coil switching (only while not coasting)
+      // 11. Coil switching — switch when next coil produces greater forward acceleration
       if (!coasting && coil_idx < path_len - 1) {
-        bool passed = moveX
-          ? ((dx > 0 && piece.x > cx + 0.1f) || (dx < 0 && piece.x < cx - 0.1f))
-          : ((dy > 0 && piece.y > cy + 0.1f) || (dy < 0 && piece.y < cy - 0.1f));
+        float next_cx = path_mm[coil_idx + 1][0];
+        float next_cy = path_mm[coil_idx + 1][1];
+        float next_off_x = piece.x - next_cx;
+        float next_off_y = piece.y - next_cy;
 
-        if (passed) {
+        int nextLayer = params.all_coils_equal ? 0 : bitToLayer(
+          coordToBit((uint8_t)(next_cx / GRID_TO_MM + 0.5f), (uint8_t)(next_cy / GRID_TO_MM + 0.5f)));
+
+        // Current coil: forward acceleration at max current
+        float cur_fx_move = moveX ? fx_1a : fy_1a;
+        float cur_forward = cur_fx_move * move_sign * params.max_current_a;
+        float cur_normal = fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
+        float cur_net = cur_forward - params.mu_kinetic * cur_normal;
+
+        // Next coil: forward acceleration at max current
+        float nfx_1a = tableForceFx(nextLayer, next_off_x, next_off_y) * params.force_scale;
+        float nfy_1a = tableForceFy(nextLayer, next_off_x, next_off_y) * params.force_scale;
+        float nfz_1a = tableForceFz(nextLayer, next_off_x, next_off_y) * params.force_scale;
+        float next_fx_move = moveX ? nfx_1a : nfy_1a;
+        float next_forward = next_fx_move * move_sign * params.max_current_a;
+        float next_normal = fmaxf(weight_mN - nfz_1a * params.max_current_a, 0.0f);
+        float next_net = next_forward - params.mu_kinetic * next_normal;
+
+        if (next_net > cur_net) {
           coil_idx++;
-          cx = path_mm[coil_idx][0];
-          cy = path_mm[coil_idx][1];
+          cx = next_cx;
+          cy = next_cy;
 
           uint8_t gx = (uint8_t)(cx / GRID_TO_MM + 0.5f);
           uint8_t gy = (uint8_t)(cy / GRID_TO_MM + 0.5f);
