@@ -153,8 +153,9 @@ public:
       float speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
       float v_along = (moveX ? piece.vx : piece.vy) * move_sign;
 
-      // 4. Dynamic friction
-      float normal_mN = weight_mN + fz_1a * last_current;
+      // 4. Dynamic friction — Fz is negative (pulls magnet toward coil/PCB),
+      // which INCREASES normal force (piece pressed harder into surface).
+      float normal_mN = weight_mN - fz_1a * last_current;
       if (normal_mN < 0) normal_mN = 0;
       float mu = (piece.stuck || speed < 0.1f) ? params.mu_static : params.mu_kinetic;
       float friction_mN = mu * normal_mN;
@@ -162,7 +163,7 @@ public:
       // 5. Static friction check
       if (piece.stuck) {
         float avail = sqrtf(fx_1a * fx_1a + fy_1a * fy_1a) * params.max_current_a;
-        float static_fric = params.mu_static * (weight_mN + fz_1a * params.max_current_a);
+        float static_fric = params.mu_static * (weight_mN - fz_1a * params.max_current_a);
         if (avail > fmaxf(static_fric, 0)) {
           piece.stuck = false;
           last_tick_us = micros();
@@ -226,7 +227,7 @@ public:
       } else {
         // 7. Controller: desired force → current → duty
         float speed_error = params.target_velocity_mm_s - v_along;
-        float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2), params.target_accel_mm_s2);
+        float desired_accel = fminf(fmaxf(speed_error / dt, 0.0f), params.target_accel_mm_s2);
 
         // Jerk limit: clamp rate of change of acceleration
         float max_da = params.max_jerk_mm_s3 * dt;

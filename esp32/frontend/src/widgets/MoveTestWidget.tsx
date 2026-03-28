@@ -50,16 +50,16 @@ export default function MoveTestWidget({ onStatus }: WidgetProps) {
     });
 
     try {
-      // Setup: ensure piece at (0,3)
+      // Setup: clear all pieces, place one at (0,3)
       log(collected, `--- SETUP (0,3) -> (${toX},3) ---`);
-      const state = await withTimeout(getBoardState(), TIMEOUT_MS, "getBoardState");
-      const pieceAt03 = state.pieces[0]?.[3] ?? 0;
-      if (pieceAt03 === 0) {
-        log(collected, "Placing piece at (0,3)");
-        await withTimeout(setPiece({ x: 0, y: 3, id: 1 }), TIMEOUT_MS, "setPiece");
+      for (let x = 0; x <= 9; x++) {
+        for (let y = 0; y <= 6; y++) {
+          try { await setPiece({ x, y, id: 0 }); } catch {}
+        }
       }
+      await withTimeout(setPiece({ x: 0, y: 3, id: 1 }), TIMEOUT_MS, "setPiece");
 
-      // Physics move
+      // Physics move (skip validation)
       log(collected, `--- PHYSICS MOVE (0,3) -> (${toX},3) ---`);
       onStatus(`Physics move (0,3) -> (${toX},3)...`);
 
@@ -89,10 +89,13 @@ export default function MoveTestWidget({ onStatus }: WidgetProps) {
 
       await new Promise(r => setTimeout(r, 200));
 
-      try {
-        await withTimeout(setPiece({ x: toX, y: 3, id: 1 }), TIMEOUT_MS, "setPiece dest");
-        await withTimeout(setPiece({ x: 0, y: 3, id: 0 }), TIMEOUT_MS, "clear start");
-      } catch {}
+      // Reset board state for return move
+      for (let x = 0; x <= 9; x++) {
+        for (let y = 0; y <= 6; y++) {
+          try { await setPiece({ x, y, id: 0 }); } catch {}
+        }
+      }
+      await withTimeout(setPiece({ x: toX, y: 3, id: 1 }), TIMEOUT_MS, "setPiece dest");
 
       const backRes = await withTimeout(
         movePhysics({ from_x: toX, from_y: 3, to_x: 0, to_y: 3 }),
