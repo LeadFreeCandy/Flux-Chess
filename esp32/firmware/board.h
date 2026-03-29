@@ -616,38 +616,40 @@ public:
     return moveOrthogonalClearing(fromX, fromY, toX, toY, 0, max_retry_attempts);
   }
 
-  // Kill a piece by moving it to the graveyard using dumb moves.
-  // Uses dumb moves to avoid recursively clearing other pieces off the board.
+  // Kill a piece by moving it to the graveyard.
+  // Picks the graveyard slot that requires the fewest displacements.
   MoveError killPiece(uint8_t x, uint8_t y) {
     if (getPiece(x, y) == PIECE_NONE) return MoveError::NONE;
 
-    int8_t gy = findGraveyardSlot();
-    if (gy < 0) {
+    // Try all empty graveyard slots, pick the one with least obstructions
+    static const uint8_t slots[] = {0, 3, 6};
+    int bestObs = 999;
+    int8_t bestSlot = -1;
+
+    for (auto sy : slots) {
+      if (getPiece(GRAVE_X, sy) != PIECE_NONE) continue;
+
+      // Count obstructions for both Manhattan orderings, take the minimum
+      int obstX1st = countObstructions(x, y, GRAVE_X, y)
+                   + countObstructions(GRAVE_X, y, GRAVE_X, sy);
+      int obstY1st = countObstructions(x, y, x, sy)
+                   + countObstructions(x, sy, GRAVE_X, sy);
+      int best = (obstX1st < obstY1st) ? obstX1st : obstY1st;
+
+      if (best < bestObs) {
+        bestObs = best;
+        bestSlot = sy;
+        if (best == 0) break;  // can't do better than zero
+      }
+    }
+
+    if (bestSlot < 0) {
       LOG_BOARD("killPiece: no graveyard slot available!");
       return MoveError::COIL_FAILURE;
     }
 
-    LOG_BOARD("killPiece: (%d,%d) -> graveyard (%d,%d)", x, y, GRAVE_X, gy);
-
-    // Move to graveyard using dumb orthogonal moves (no path clearing).
-    // Route: move X first to graveyard column, then Y to slot.
-    // Try both orderings and pick the one with no obstructions.
-    int obstX1st = countObstructions(x, y, GRAVE_X, y)
-                 + countObstructions(GRAVE_X, y, GRAVE_X, (uint8_t)gy);
-    int obstY1st = countObstructions(x, y, x, (uint8_t)gy)
-                 + countObstructions(x, (uint8_t)gy, GRAVE_X, (uint8_t)gy);
-
-    MoveError err;
-    if (obstX1st <= obstY1st) {
-      err = moveDumbOrthogonal(x, y, GRAVE_X, y, true);
-      if (err != MoveError::NONE) return err;
-      err = moveDumbOrthogonal(GRAVE_X, y, GRAVE_X, (uint8_t)gy, true);
-    } else {
-      err = moveDumbOrthogonal(x, y, x, (uint8_t)gy, true);
-      if (err != MoveError::NONE) return err;
-      err = moveDumbOrthogonal(x, (uint8_t)gy, GRAVE_X, (uint8_t)gy, true);
-    }
-    return err;
+    LOG_BOARD("killPiece: (%d,%d) -> graveyard (%d,%d) obst=%d", x, y, GRAVE_X, bestSlot, bestObs);
+    return movePiece(x, y, GRAVE_X, (uint8_t)bestSlot);
   }
 
 private:
