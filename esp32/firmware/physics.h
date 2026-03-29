@@ -207,12 +207,16 @@ public:
         fx = 0; fy = 0;
         duty = 0;
 
-        // Centering pulse: when piece has nearly stopped near destination, pulse dest coil
+        // Centering pulse: fire when piece has nearly stopped
+        // If near destination (<3mm): normal centering
+        // If stopped far from destination: sim/reality mismatch, pulse to pull piece in
         float dest_x = path_mm[path_len-1][0];
         float dest_y = path_mm[path_len-1][1];
         float d_dest = sqrtf((piece.x-dest_x)*(piece.x-dest_x) + (piece.y-dest_y)*(piece.y-dest_y));
 
-        if (!centered && params.brake_pulse_ms > 0 && d_dest < COAST_TOLERANCE_MM && speed < 20.0f) {
+        bool should_pulse = !centered && params.brake_pulse_ms > 0 && speed < 20.0f
+                            && (d_dest < COAST_TOLERANCE_MM || speed < 0.5f);
+        if (should_pulse) {
           // Fire centering pulse on destination coil
           int8_t destBit = coordToBit((uint8_t)(dest_x / GRID_TO_MM + 0.5f),
                                       (uint8_t)(dest_y / GRID_TO_MM + 0.5f));
@@ -258,7 +262,8 @@ public:
 
       // 8. Apply friction (always opposes velocity, can't reverse)
       if (speed > 0.1f) {
-        float fric = params.mu_kinetic * fmaxf(normal_mN, 0);
+        float mu_fric = coasting ? (params.mu_kinetic + params.coast_friction_offset) : params.mu_kinetic;
+        float fric = mu_fric * fmaxf(normal_mN, 0);
         float max_fric = speed / dt * mass_kg;  // max force that stops piece in one tick (mN)
         if (fric > max_fric) fric = max_fric;
         fx -= fric * (piece.vx / speed);
