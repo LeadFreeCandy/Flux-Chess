@@ -269,8 +269,10 @@ public:
       }
 
       // 9. Update velocity: a = F/m
-      piece.vx += (fx / mass_kg) * dt;
-      piece.vy += (fy / mass_kg) * dt;
+      float ax = fx / mass_kg;
+      float ay = fy / mass_kg;
+      piece.vx += ax * dt;
+      piece.vy += ay * dt;
 
       speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
       if (speed > params.target_velocity_mm_s * SPEED_CLAMP_FACTOR) {
@@ -287,8 +289,8 @@ public:
       tick_count++;
       if (tick_count % 10 == 0) {
         unsigned long elapsed = millis() - t0;
-        LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
-                  elapsed, piece.x, piece.y, piece.vx, piece.vy, duty,
+        LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) a=(%.0f,%.0f) duty=%d %s",
+                  elapsed, piece.x, piece.y, piece.vx, piece.vy, ax, ay, duty,
                   coasting ? (braked ? "BRAKE" : "COAST") : "");
       }
 
