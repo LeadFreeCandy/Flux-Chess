@@ -254,7 +254,7 @@ public:
         if (raw_duty < 0) raw_duty = 0;
         if (raw_duty > 255) raw_duty = 255;
         duty = (uint8_t)raw_duty;
-        float eff_duty = duty + (255.0f - duty) * comp;
+        float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
         float actual_current = (eff_duty / 255.0f) * params.max_current_a;
         last_current = actual_current;
 
