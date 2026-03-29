@@ -587,20 +587,25 @@ public:
       if (err != MoveError::NONE) return err;
     }
 
-    // Manhattan routing: if diagonal, pick leg order with fewer obstructions
+    // Manhattan routing: if diagonal, prefer path with no obstructions.
+    // Only use moveOrthogonalClearing (which displaces pieces) as last resort.
     if (fromX != toX && fromY != toY) {
       int obstX1st = countObstructions(fromX, fromY, toX, fromY)
                    + countObstructions(toX, fromY, toX, toY);
       int obstY1st = countObstructions(fromX, fromY, fromX, toY)
                    + countObstructions(fromX, toY, toX, toY);
 
-      if (obstX1st <= obstY1st) {
-        // X first, then Y
+      // Try clear path first (no obstructions), fall back to fewer obstructions
+      bool xFirst;
+      if (obstX1st == 0 && obstY1st > 0) xFirst = true;
+      else if (obstY1st == 0 && obstX1st > 0) xFirst = false;
+      else xFirst = (obstX1st <= obstY1st);
+
+      if (xFirst) {
         MoveError err = moveOrthogonalClearing(fromX, fromY, toX, fromY, 0, max_retry_attempts);
         if (err != MoveError::NONE) return err;
         return moveOrthogonalClearing(toX, fromY, toX, toY, 0, max_retry_attempts);
       } else {
-        // Y first, then X
         MoveError err = moveOrthogonalClearing(fromX, fromY, fromX, toY, 0, max_retry_attempts);
         if (err != MoveError::NONE) return err;
         return moveOrthogonalClearing(fromX, toY, toX, toY, 0, max_retry_attempts);
@@ -611,7 +616,8 @@ public:
     return moveOrthogonalClearing(fromX, fromY, toX, toY, 0, max_retry_attempts);
   }
 
-  // Kill a piece by moving it to the graveyard
+  // Kill a piece by moving it to the graveyard using dumb moves.
+  // Uses dumb moves to avoid recursively clearing other pieces off the board.
   MoveError killPiece(uint8_t x, uint8_t y) {
     if (getPiece(x, y) == PIECE_NONE) return MoveError::NONE;
 
@@ -622,7 +628,26 @@ public:
     }
 
     LOG_BOARD("killPiece: (%d,%d) -> graveyard (%d,%d)", x, y, GRAVE_X, gy);
-    return movePiece(x, y, GRAVE_X, (uint8_t)gy);
+
+    // Move to graveyard using dumb orthogonal moves (no path clearing).
+    // Route: move X first to graveyard column, then Y to slot.
+    // Try both orderings and pick the one with no obstructions.
+    int obstX1st = countObstructions(x, y, GRAVE_X, y)
+                 + countObstructions(GRAVE_X, y, GRAVE_X, (uint8_t)gy);
+    int obstY1st = countObstructions(x, y, x, (uint8_t)gy)
+                 + countObstructions(x, (uint8_t)gy, GRAVE_X, (uint8_t)gy);
+
+    MoveError err;
+    if (obstX1st <= obstY1st) {
+      err = moveDumbOrthogonal(x, y, GRAVE_X, y, true);
+      if (err != MoveError::NONE) return err;
+      err = moveDumbOrthogonal(GRAVE_X, y, GRAVE_X, (uint8_t)gy, true);
+    } else {
+      err = moveDumbOrthogonal(x, y, x, (uint8_t)gy, true);
+      if (err != MoveError::NONE) return err;
+      err = moveDumbOrthogonal(x, (uint8_t)gy, GRAVE_X, (uint8_t)gy, true);
+    }
+    return err;
   }
 
 private:
