@@ -229,11 +229,6 @@ public:
         float speed_error = params.target_velocity_mm_s - v_along;
         float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2), params.target_accel_mm_s2);
 
-        if (desired_accel < 0) {
-          LOG_BOARD("physics: WARNING negative accel requested: %.1f mm/s^2 (v=%.1f target=%.1f)",
-                    desired_accel, v_along, params.target_velocity_mm_s);
-        }
-
         float desired_force = mass_kg * desired_accel + friction_mN;
         if (desired_force < 0) desired_force = 0;  // never actively brake, let friction handle it
 
@@ -250,7 +245,9 @@ public:
         if (raw_duty < 0) raw_duty = 0;
         if (raw_duty > 255) raw_duty = 255;
         duty = (uint8_t)raw_duty;
-        if (duty == 0 && desired_force > 0) duty = 1;
+        // Floor duty to 1 only when accelerating — when decelerating (desired_force reduced
+        // by negative desired_accel), duty=0 is correct (let friction slow the piece)
+        if (duty == 0 && desired_accel > 0 && desired_force > 0) duty = 1;
         float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
         float actual_current = (eff_duty / 255.0f) * params.max_current_a;
         last_current = actual_current;
