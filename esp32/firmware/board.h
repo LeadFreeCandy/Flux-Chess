@@ -165,8 +165,8 @@ public:
         if (sx % SR_BLOCK != 0 || sy % SR_BLOCK != 0) continue;
         uint8_t si = sensorForGrid(sx, sy);
         if (si == last_si) continue;  // skip duplicate
-        float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2030.0f;
-        float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1700.0f;
+        float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2040.0f;
+        float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1860.0f;
         path_sensors[num_path_sensors] = si;
         sensor_thresholds[num_path_sensors] = (baseline + piece_mean) / 2.0f;
         last_si = si;
@@ -262,8 +262,8 @@ public:
       uint8_t recSensor = sensorForGrid(recX, recY);
       delay(50);
       uint16_t recReading = hw_.readSensor(recSensor);
-      float recBaseline = cal_data_.valid ? cal_data_.sensors[recSensor].baseline_mean : 2030.0f;
-      float recPieceMean = cal_data_.valid ? cal_data_.sensors[recSensor].piece_mean : 1700.0f;
+      float recBaseline = cal_data_.valid ? cal_data_.sensors[recSensor].baseline_mean : 2040.0f;
+      float recPieceMean = cal_data_.valid ? cal_data_.sensors[recSensor].piece_mean : 1860.0f;
       float recThreshold = (recBaseline + recPieceMean) / 2.0f;
 
       if (recReading >= recThreshold) {
@@ -318,8 +318,8 @@ public:
   bool sensorDetectsPiece(int gc, int gr) {
     uint8_t si = sensorForGrid(Hexapawn::toGrid(gc), Hexapawn::toGrid(gr));
     uint16_t reading = hw_.readSensor(si);
-    float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2030.0f;
-    float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1700.0f;
+    float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2040.0f;
+    float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1860.0f;
     float threshold = (baseline + piece_mean) / 2.0f;
     return reading < threshold;
   }
@@ -776,7 +776,7 @@ public:
     int8_t coil_bit = coordToBit(TUNE_X + 1, TUNE_Y);  // adjacent coil for testing
 
     // Get baseline
-    float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2030.0f;
+    float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2040.0f;
 
     // ── Phase 1: Sensor curve fitting ──
     LOG_BOARD("TUNE: phase1 - sensor curve fitting");
