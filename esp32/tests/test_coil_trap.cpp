@@ -226,6 +226,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
       if (raw_duty < 0) raw_duty = 0;
       if (raw_duty > 255) raw_duty = 255;
       duty = (uint8_t)raw_duty;
+      if (duty == 0 && desired_force > 0) duty = 1;
       float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
       float actual_current = (eff_duty / 255.0f) * params.max_current_a;
       last_current = actual_current;
@@ -440,6 +441,26 @@ int main(int argc, char** argv) {
     printf("  %5.1f     %-10s  %7.0f    %d         %.1f\n",
            I, r.error == MoveError::NONE ? "OK" : "STUCK",
            r.elapsed_ms, r.coil_switches, r.stuck_at_mm);
+  }
+
+  // ── PWM comp sweep (the duty=0 dead zone bug) ──
+  p.target_velocity_mm_s = 100.0f;
+  p.max_current_a = 2.5f;
+  p.mu_static = 0.5f;
+  p.mu_kinetic = 0.4f;
+  printf("\n--- PWM comp sweep (3-step, v=100, I=2.5, mu_s=0.5, mu_k=0.4) ---\n");
+  printf("  %-8s  %-10s  %-10s  %-8s\n", "comp", "result", "time_ms", "switches");
+  for (float c : {0.0f, 0.05f, 0.1f, 0.15f, 0.2f, 0.3f, 0.4f, 0.5f}) {
+    p.pwm_compensation = c;
+
+    float path[3][2];
+    for (int i = 0; i < 3; i++) { path[i][0] = (i+1) * GRID_TO_MM; path[i][1] = 0; }
+
+    PieceState piece; piece.reset(0, 0);
+    SimResult r = simulate(piece, path, 3, p);
+    printf("  %5.2f     %-10s  %7.0f    %d\n",
+           c, r.error == MoveError::NONE ? "OK" : "STUCK",
+           r.elapsed_ms, r.coil_switches);
   }
 
   return 0;

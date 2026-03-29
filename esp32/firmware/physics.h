@@ -254,6 +254,9 @@ public:
         if (raw_duty < 0) raw_duty = 0;
         if (raw_duty > 255) raw_duty = 255;
         duty = (uint8_t)raw_duty;
+        // Ensure non-zero duty when force is requested — PWM comp can map small
+        // current requests to duty=0, creating a dead zone where no current flows
+        if (duty == 0 && desired_force > 0) duty = 1;
         float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
         float actual_current = (eff_duty / 255.0f) * params.max_current_a;
         last_current = actual_current;
