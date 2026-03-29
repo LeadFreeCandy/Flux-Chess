@@ -270,13 +270,18 @@ public:
         fy -= fric * (piece.vy / speed);
       }
 
-      // 9. Update velocity: a = F/m, clamped to prevent unrealistic spikes
+      // 9. Update velocity: a = F/m
+      // Clamp acceleration during powered movement only — friction spikes from
+      // Fz-enhanced normal force can produce unrealistic deceleration near coil centers.
+      // During coast, friction is gravity-only and must not be clamped.
       float ax = fx / mass_kg;
       float ay = fy / mass_kg;
-      float accel_mag = sqrtf(ax * ax + ay * ay);
-      if (accel_mag > params.target_accel_mm_s2 * 3.0f) {
-        float scale = params.target_accel_mm_s2 * 3.0f / accel_mag;
-        ax *= scale; ay *= scale;
+      if (!coasting) {
+        float accel_mag = sqrtf(ax * ax + ay * ay);
+        if (accel_mag > params.target_accel_mm_s2 * 3.0f) {
+          float scale = params.target_accel_mm_s2 * 3.0f / accel_mag;
+          ax *= scale; ay *= scale;
+        }
       }
       piece.vx += ax * dt;
       piece.vy += ay * dt;
