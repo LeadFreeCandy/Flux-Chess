@@ -123,7 +123,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
   float weight_mN = params.piece_mass_g * 9.81f;
   float mass_kg = params.piece_mass_g * 1e-3f;
 
-  uint16_t last_duty = 4095;
+  uint8_t last_duty = 255;
   float last_current = params.max_current_a;
   float max_speed = 0;
   bool coasting = false;
@@ -175,7 +175,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
     }
 
     float fx, fy;
-    uint16_t duty;
+    uint8_t duty;
 
     if (!coasting) {
       float dest_x = path_mm[path_len-1][0];
@@ -213,15 +213,15 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
       required_current = fminf(required_current, params.max_current_a);
       if (required_current < 0) required_current = 0;
 
-      float desired_eff_duty = required_current / params.max_current_a * 4095.0f;
+      float desired_eff_duty = required_current / params.max_current_a * 255.0f;
       float comp = params.pwm_compensation;
-      float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 4095.0f * comp) / (1.0f - comp) : 0;
+      float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 255.0f * comp) / (1.0f - comp) : 0;
       if (raw_duty < 0) raw_duty = 0;
-      if (raw_duty > 4095) raw_duty = 4095;
-      duty = (uint16_t)raw_duty;
+      if (raw_duty > 255) raw_duty = 255;
+      duty = (uint8_t)raw_duty;
       if (duty == 0 && desired_force > 0) duty = 1;
-      float eff_duty = (duty > 0) ? duty + (4095.0f - duty) * comp : 0;
-      float actual_current = (eff_duty / 4095.0f) * params.max_current_a;
+      float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
+      float actual_current = (eff_duty / 255.0f) * params.max_current_a;
       last_current = actual_current;
 
       fx = fx_1a * actual_current;
@@ -308,7 +308,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
         cx = next_cx;
         cy = next_cy;
         activeLayer = 0;
-        last_duty = 4095;
+        last_duty = 255;
         last_current = params.max_current_a;
         coil_switches++;
         if (verbose) printf("  >>> SWITCH coil %d at (%.1f,%.1f) cur_accel=%.0f next_accel=%.0f\n",

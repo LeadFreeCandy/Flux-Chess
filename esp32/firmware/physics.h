@@ -80,11 +80,11 @@ public:
     // Set PWM frequency from params
     hw_.setPwmFrequency(params.pwm_freq_hz);
 
-    if (!hw_.startCoil((uint8_t)activeBit, 4095)) return MoveError::COIL_FAILURE;
+    if (!hw_.startCoil((uint8_t)activeBit, 255)) return MoveError::COIL_FAILURE;
 
     unsigned long t0 = millis();
     unsigned long last_tick_us = micros();
-    uint16_t last_duty = 4095;
+    uint8_t last_duty = 255;
     float last_current = params.max_current_a;
 
     // Stats
@@ -178,7 +178,7 @@ public:
       }
 
       float fx, fy;
-      uint16_t duty;
+      uint8_t duty;
 
       if (!coasting) {
         // 6. Stopping check — can we coast to destination from here?
@@ -217,7 +217,7 @@ public:
           int8_t destBit = coordToBit((uint8_t)(dest_x / GRID_TO_MM + 0.5f),
                                       (uint8_t)(dest_y / GRID_TO_MM + 0.5f));
           if (destBit >= 0) {
-            hw_.pulseBit((uint8_t)destBit, params.brake_pulse_ms, 4095);
+            hw_.pulseBit((uint8_t)destBit, params.brake_pulse_ms, 255);
             centered = true;
             braked = true;
             LOG_BOARD("physics: centering pulse %dms at d=%.1fmm v=%.1f",
@@ -229,6 +229,11 @@ public:
         float speed_error = params.target_velocity_mm_s - v_along;
         float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2), params.target_accel_mm_s2);
 
+        if (desired_accel < 0) {
+          LOG_BOARD("physics: WARNING negative accel requested: %.1f mm/s^2 (v=%.1f target=%.1f)",
+                    desired_accel, v_along, params.target_velocity_mm_s);
+        }
+
         float desired_force = mass_kg * desired_accel + friction_mN;
         if (desired_force < 0) desired_force = 0;  // never actively brake, let friction handle it
 
@@ -237,17 +242,17 @@ public:
         required_current = fminf(required_current, params.max_current_a);
         if (required_current < 0) required_current = 0;
 
-        // Compute raw duty (12-bit, 0-4095) accounting for PWM compensation
-        // effective = raw + (4095 - raw) * comp → raw = (effective - 4095*comp) / (1 - comp)
-        float desired_eff_duty = required_current / params.max_current_a * 4095.0f;
+        // Compute raw duty accounting for PWM compensation
+        // effective = raw + (255 - raw) * comp → raw = (effective - 255*comp) / (1 - comp)
+        float desired_eff_duty = required_current / params.max_current_a * 255.0f;
         float comp = params.pwm_compensation;
-        float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 4095.0f * comp) / (1.0f - comp) : 0;
+        float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 255.0f * comp) / (1.0f - comp) : 0;
         if (raw_duty < 0) raw_duty = 0;
-        if (raw_duty > 4095) raw_duty = 4095;
-        duty = (uint16_t)raw_duty;
+        if (raw_duty > 255) raw_duty = 255;
+        duty = (uint8_t)raw_duty;
         if (duty == 0 && desired_force > 0) duty = 1;
-        float eff_duty = (duty > 0) ? duty + (4095.0f - duty) * comp : 0;
-        float actual_current = (eff_duty / 4095.0f) * params.max_current_a;
+        float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
+        float actual_current = (eff_duty / 255.0f) * params.max_current_a;
         last_current = actual_current;
 
         fx = fx_1a * actual_current;
@@ -329,8 +334,8 @@ public:
           hw_.stopCoil((uint8_t)activeBit);
           activeBit = newBit;
           activeLayer = params.all_coils_equal ? 0 : bitToLayer(newBit);
-          hw_.startCoil((uint8_t)activeBit, 4095);
-          last_duty = 4095;
+          hw_.startCoil((uint8_t)activeBit, 255);
+          last_duty = 255;
           last_current = params.max_current_a;
           coil_switches++;
 

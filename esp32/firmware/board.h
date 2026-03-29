@@ -337,14 +337,14 @@ public:
         // White row (row 0)
         uint8_t gx = Hexapawn::toGrid(c), gy = Hexapawn::toGrid(0);
         int8_t bit = coordToBit(gx, gy);
-        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 4095);
+        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
         delay(100);
       }
       for (int c = 0; c < HP_SIZE; c++) {
         // Black row (row 2)
         uint8_t gx = Hexapawn::toGrid(c), gy = Hexapawn::toGrid(2);
         int8_t bit = coordToBit(gx, gy);
-        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 4095);
+        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
         delay(100);
       }
     }
@@ -507,7 +507,7 @@ public:
               {
                 uint8_t gx = Hexapawn::toGrid(lifted_c), gy = Hexapawn::toGrid(lifted_r);
                 int8_t bit = coordToBit(gx, gy);
-                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 4095);
+                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
               }
               // Pulse valid destinations
               for (int i = 0; i < nMoves; i++) {
@@ -515,7 +515,7 @@ public:
                 int dc = allMoves[i].tc, dr = allMoves[i].tr;
                 uint8_t gx = Hexapawn::toGrid(dc), gy = Hexapawn::toGrid(dr);
                 int8_t bit = coordToBit(gx, gy);
-                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 4095);
+                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
               }
             }
           }
@@ -846,9 +846,9 @@ public:
       delay(TUNE_SETTLE_MS);
       uint16_t pre = hw_.readSensor(si);
 
-      uint16_t found_duty = 4095;
-      for (int d = TUNE_FRICTION_DUTY_STEP * 16; d <= 4095; d += TUNE_FRICTION_DUTY_STEP * 16) {
-        hw_.pulseBit((uint8_t)coil_bit, TUNE_FRICTION_PULSE_MS, (uint16_t)d);
+      uint8_t found_duty = 255;
+      for (int d = TUNE_FRICTION_DUTY_STEP; d <= 255; d += TUNE_FRICTION_DUTY_STEP) {
+        hw_.pulseBit((uint8_t)coil_bit, TUNE_FRICTION_PULSE_MS, (uint8_t)d);
         delay(TUNE_SETTLE_MS);
         uint16_t post = hw_.readSensor(si);
 
@@ -905,7 +905,7 @@ public:
         delay(TUNE_SETTLE_MS);
 
         uint16_t pre = hw_.readSensor(si);
-        hw_.pulseBit((uint8_t)coil_bit, TUNE_DURATIONS[di], 4095);
+        hw_.pulseBit((uint8_t)coil_bit, TUNE_DURATIONS[di], 255);
         delay(TUNE_SETTLE_MS);
         uint16_t post = hw_.readSensor(si);
 

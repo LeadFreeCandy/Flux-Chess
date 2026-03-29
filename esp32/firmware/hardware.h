@@ -32,7 +32,6 @@ public:
       pinMode(HALL_PINS[i], INPUT);
     }
 
-    analogWriteResolution(PIN_SR_OE, 12);   // 12-bit PWM (0-4095)
     analogWriteFrequency(PIN_SR_OE, 20000); // 20kHz — just above audible range
 
     pinMode(PIN_DC1, INPUT);
@@ -87,7 +86,7 @@ public:
   static const uint8_t BITS_PER_SR = 5;
 
   // Pulse a coil for a fixed duration. Returns false if rejected (thermal/invalid).
-  bool pulseBit(uint8_t globalBit, uint16_t duration_ms, uint16_t pwm_duty = 4095) {
+  bool pulseBit(uint8_t globalBit, uint16_t duration_ms, uint8_t pwm_duty = 255) {
     if (!validateBit(globalBit)) return false;
 
     float heat = decayHeat(globalBit);
@@ -110,7 +109,7 @@ public:
 
   // Activate a coil and leave it on (for use with sustainCoil).
   // Clears all bits, sets the requested bit, flushes to hardware.
-  bool startCoil(uint8_t globalBit, uint16_t pwm_duty = 4095) {
+  bool startCoil(uint8_t globalBit, uint8_t pwm_duty = 255) {
     if (!validateBit(globalBit)) return false;
 
     xSemaphoreTake(sr_mutex_, portMAX_DELAY);
@@ -142,7 +141,7 @@ public:
   // Sustain the currently active coil without SPI writes.
   // Must be the same bit as the last pulseBit/sustainCoil call.
   // Returns false if bit mismatch or validation fails.
-  bool sustainCoil(uint8_t globalBit, uint16_t duration_us, uint16_t pwm_duty = 4095) {
+  bool sustainCoil(uint8_t globalBit, uint16_t duration_us, uint8_t pwm_duty = 255) {
     if (!validateBit(globalBit)) return false;
 
     // Verify this bit is currently active
@@ -242,13 +241,13 @@ private:
     digitalWrite(PIN_SR_OE, enabled ? LOW : HIGH);
   }
 
-  void srSetPWM(uint16_t duty) {
+  void srSetPWM(uint8_t duty) {
     if (duty == 0) {
-      analogWrite(PIN_SR_OE, 4095);
-    } else if (duty >= 4095) {
+      analogWrite(PIN_SR_OE, 255);
+    } else if (duty >= 255) {
       analogWrite(PIN_SR_OE, 0);
     } else {
-      analogWrite(PIN_SR_OE, 4095 - duty);
+      analogWrite(PIN_SR_OE, 255 - duty);
     }
   }
 
