@@ -100,7 +100,7 @@ public:
     static constexpr float CENTERED_SPEED_MM_S = 10.0f;  // after centering pulse, done when below this
     static constexpr float SPEED_CLAMP_FACTOR = 1.5f;    // clamp velocity to target * this
 
-    unsigned long last_log_ms = 0;
+    int tick_count = 0;
 
     // Sensor diagnostic tracking
     if (diag) {
@@ -283,17 +283,13 @@ public:
       piece.x += piece.vx * dt;
       piece.y += piece.vy * dt;
 
-      // Debug log every 10ms (every 10th tick at 1kHz)
-      {
+      // Debug log every 10 ticks (~10ms at 1kHz)
+      tick_count++;
+      if (tick_count % 10 == 0) {
         unsigned long elapsed = millis() - t0;
-        if (elapsed != last_log_ms) {
-          last_log_ms = elapsed;
-          if (elapsed % 10 == 0) {
-            LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
-                      elapsed, piece.x, piece.y, piece.vx, piece.vy, duty,
-                      coasting ? (braked ? "BRAKE" : "COAST") : "");
-          }
-        }
+        LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
+                  elapsed, piece.x, piece.y, piece.vx, piece.vy, duty,
+                  coasting ? (braked ? "BRAKE" : "COAST") : "");
       }
 
       // 11. Coil switching — switch when next coil produces greater forward acceleration
