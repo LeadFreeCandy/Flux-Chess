@@ -123,9 +123,8 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
   float weight_mN = params.piece_mass_g * 9.81f;
   float mass_kg = params.piece_mass_g * 1e-3f;
 
-  uint8_t last_duty = 255;
+  uint16_t last_duty = 4095;
   float last_current = params.max_current_a;
-  float last_accel = 0;
   float max_speed = 0;
   bool coasting = false;
   bool centered = false;
@@ -176,7 +175,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
     }
 
     float fx, fy;
-    uint8_t duty;
+    uint16_t duty;
 
     if (!coasting) {
       float dest_x = path_mm[path_len-1][0];
@@ -202,15 +201,9 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
         centered = true;
       }
     } else {
-      // 7. Controller — identical to firmware
+      // 7. Controller — no jerk limiting, 12-bit duty
       float speed_error = params.target_velocity_mm_s - v_along;
-      float desired_accel = fminf(fmaxf(speed_error / dt, 0.0f), params.target_accel_mm_s2);
-
-      float max_da = params.max_jerk_mm_s3 * dt;
-      float da_val = desired_accel - last_accel;
-      if (da_val > max_da) desired_accel = last_accel + max_da;
-      else if (da_val < -max_da) desired_accel = last_accel - max_da;
-      last_accel = desired_accel;
+      float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2), params.target_accel_mm_s2);
 
       float desired_force = mass_kg * desired_accel + friction_mN;
       if (desired_force < 0) desired_force = 0;
@@ -220,15 +213,15 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
       required_current = fminf(required_current, params.max_current_a);
       if (required_current < 0) required_current = 0;
 
-      float desired_eff_duty = required_current / params.max_current_a * 255.0f;
+      float desired_eff_duty = required_current / params.max_current_a * 4095.0f;
       float comp = params.pwm_compensation;
-      float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 255.0f * comp) / (1.0f - comp) : 0;
+      float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 4095.0f * comp) / (1.0f - comp) : 0;
       if (raw_duty < 0) raw_duty = 0;
-      if (raw_duty > 255) raw_duty = 255;
-      duty = (uint8_t)raw_duty;
+      if (raw_duty > 4095) raw_duty = 4095;
+      duty = (uint16_t)raw_duty;
       if (duty == 0 && desired_force > 0) duty = 1;
-      float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
-      float actual_current = (eff_duty / 255.0f) * params.max_current_a;
+      float eff_duty = (duty > 0) ? duty + (4095.0f - duty) * comp : 0;
+      float actual_current = (eff_duty / 4095.0f) * params.max_current_a;
       last_current = actual_current;
 
       fx = fx_1a * actual_current;
@@ -315,7 +308,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
         cx = next_cx;
         cy = next_cy;
         activeLayer = 0;
-        last_duty = 255;
+        last_duty = 4095;
         last_current = params.max_current_a;
         coil_switches++;
         if (verbose) printf("  >>> SWITCH coil %d at (%.1f,%.1f) cur_accel=%.0f next_accel=%.0f\n",
