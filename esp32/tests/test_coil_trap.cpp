@@ -137,7 +137,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
   static constexpr float CENTERED_SPEED_MM_S = 10.0f;
   static constexpr float SPEED_CLAMP_FACTOR = 1.5f;
 
-  float dt = 0.01f;
+  float dt = 0.001f;  // 1ms tick, matches firmware
   float elapsed_s = 0;
   float max_s = params.max_duration_ms / 1000.0f;
 
@@ -226,7 +226,7 @@ SimResult simulate(PieceState& piece, const float path_mm[][2], int path_len,
       if (raw_duty < 0) raw_duty = 0;
       if (raw_duty > 255) raw_duty = 255;
       duty = (uint8_t)raw_duty;
-      float eff_duty = duty + (255.0f - duty) * comp;
+      float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
       float actual_current = (eff_duty / 255.0f) * params.max_current_a;
       last_current = actual_current;
 
