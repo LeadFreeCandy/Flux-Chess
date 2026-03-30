@@ -620,11 +620,13 @@ public:
   // Attempts a diagonal move using symmetric coil pairs.
   // Sequence: catapult with origin pair, coast through gap, catch with dest coils.
   struct DiagonalParams {
-    uint16_t catapult_ms = 30;     // how long to hold catapult pair
-    uint8_t  catapult_duty = 255;  // catapult PWM duty
-    uint16_t catch_ms = 200;       // how long to hold destination coils
-    uint8_t  catch_duty = 255;     // catch PWM duty
-    uint16_t center_ms = 100;      // final centering pulse on dest
+    uint16_t catapult_ms = 30;     // phase 1: catapult pair (1,0)+(0,1) duration
+    uint8_t  catapult_duty = 255;  // phase 1: catapult PWM duty
+    uint16_t delay1_ms = 10;       // delay between catapult and catch
+    uint16_t catch_ms = 200;       // phase 2: catch pair (3,2)+(2,3) duration
+    uint8_t  catch_duty = 255;     // phase 2: catch PWM duty
+    uint16_t delay2_ms = 10;       // delay between catch and center
+    uint16_t center_ms = 100;      // phase 3: centering pulse on (3,3)
   };
 
   String diagonalTest(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
@@ -664,47 +666,47 @@ public:
     LOG_BOARD("diag: dest pair1 %d+%d, pair2 %d+%d, center %d",
               dstPair1A, dstPair1B, dstPair2A, dstPair2B, dstCenter);
 
-    // Phase 1: Catapult — fire origin pair at max for catapult_ms
+    // Phase 1: CATAPULT — fire (1,0)+(0,1) and (2,0)+(0,2) to launch diagonally
     {
-      uint8_t bits[] = { (uint8_t)catA_bit, (uint8_t)catB_bit };
-      hw_.startCoils(bits, 2, dp.catapult_duty);
-      LOG_BOARD("diag: CATAPULT %dms duty=%d", dp.catapult_ms, dp.catapult_duty);
-      delay(dp.catapult_ms);
-    }
-
-    // Phase 1b: If mid-range coils exist, fire them briefly to extend push
-    if (midA_bit >= 0 && midB_bit >= 0) {
-      uint8_t bits[] = { (uint8_t)midA_bit, (uint8_t)midB_bit };
-      hw_.startCoils(bits, 2, dp.catapult_duty);
-      LOG_BOARD("diag: MID-PUSH %dms", dp.catapult_ms / 2);
-      delay(dp.catapult_ms / 2);
-    }
-
-    // Phase 2: Catch — fire all destination coils that exist
-    {
-      uint8_t bits[5];
+      uint8_t bits[4];
       int n = 0;
-      if (dstPair1A >= 0) bits[n++] = (uint8_t)dstPair1A;
-      if (dstPair1B >= 0) bits[n++] = (uint8_t)dstPair1B;
+      bits[n++] = (uint8_t)catA_bit;
+      bits[n++] = (uint8_t)catB_bit;
+      if (midA_bit >= 0) bits[n++] = (uint8_t)midA_bit;
+      if (midB_bit >= 0) bits[n++] = (uint8_t)midB_bit;
+      hw_.startCoils(bits, n, dp.catapult_duty);
+      LOG_BOARD("diag: CATAPULT %d coils %dms duty=%d", n, dp.catapult_ms, dp.catapult_duty);
+      delay(dp.catapult_ms);
+      hw_.stopAllCoils();
+    }
+
+    // Delay 1: coast through gap
+    LOG_BOARD("diag: COAST %dms", dp.delay1_ms);
+    delay(dp.delay1_ms);
+
+    // Phase 2: CATCH — fire (3,2)+(2,3) to pull piece into destination block
+    {
+      uint8_t bits[2];
+      int n = 0;
       if (dstPair2A >= 0) bits[n++] = (uint8_t)dstPair2A;
       if (dstPair2B >= 0) bits[n++] = (uint8_t)dstPair2B;
-      if (dstCenter >= 0) bits[n++] = (uint8_t)dstCenter;
-
       if (n > 0) {
         hw_.startCoils(bits, n, dp.catch_duty);
         LOG_BOARD("diag: CATCH %d coils %dms duty=%d", n, dp.catch_ms, dp.catch_duty);
         delay(dp.catch_ms);
+        hw_.stopAllCoils();
       }
     }
 
-    // Phase 3: Center — pulse destination coil only
-    hw_.stopAllCoils();
+    // Delay 2: settle before centering
+    LOG_BOARD("diag: SETTLE %dms", dp.delay2_ms);
+    delay(dp.delay2_ms);
+
+    // Phase 3: CENTER — pulse (3,3) to snap piece to destination
     if (dstCenter >= 0 && dp.center_ms > 0) {
       hw_.pulseBit((uint8_t)dstCenter, dp.center_ms, 255);
       LOG_BOARD("diag: CENTER %dms", dp.center_ms);
     }
-
-    hw_.stopAllCoils();
 
     // Update board state
     uint8_t piece = pieces_[fromX][fromY];

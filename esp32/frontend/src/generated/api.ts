@@ -174,8 +174,10 @@ export interface DiagonalTestRequest {
   to_y: number;
   catapult_ms?: number;
   catapult_duty?: number;
+  delay1_ms?: number;
   catch_ms?: number;
   catch_duty?: number;
+  delay2_ms?: number;
   center_ms?: number;
 }
 

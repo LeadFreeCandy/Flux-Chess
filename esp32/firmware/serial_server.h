@@ -117,8 +117,10 @@ inline String handleDiagonalTest(Board& board, const String& params) {
   String v;
   if ((v = jsonGet(params, "catapult_ms")).length())   dp.catapult_ms = v.toInt();
   if ((v = jsonGet(params, "catapult_duty")).length())  dp.catapult_duty = v.toInt();
+  if ((v = jsonGet(params, "delay1_ms")).length())      dp.delay1_ms = v.toInt();
   if ((v = jsonGet(params, "catch_ms")).length())       dp.catch_ms = v.toInt();
   if ((v = jsonGet(params, "catch_duty")).length())     dp.catch_duty = v.toInt();
+  if ((v = jsonGet(params, "delay2_ms")).length())      dp.delay2_ms = v.toInt();
   if ((v = jsonGet(params, "center_ms")).length())      dp.center_ms = v.toInt();
   return board.diagonalTest(fromX, fromY, toX, toY, dp);
 }

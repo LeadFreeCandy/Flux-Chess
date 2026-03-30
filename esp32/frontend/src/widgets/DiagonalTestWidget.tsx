@@ -6,8 +6,10 @@ import { type WidgetProps, btnStyle, inputStyle, labelStyle } from "./shared";
 const DEFAULTS = {
   catapult_ms: 30,
   catapult_duty: 255,
+  delay1_ms: 10,
   catch_ms: 200,
   catch_duty: 255,
+  delay2_ms: 10,
   center_ms: 100,
 };
 
@@ -82,15 +84,28 @@ export default function DiagonalTestWidget({ onStatus }: WidgetProps) {
         display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px",
         background: "#151525", padding: 8, borderRadius: 6, border: "1px solid #2a2a4a",
       }}>
-        <label style={labelStyle}>catapult ms <input type="number" step={5} value={params.catapult_ms}
+        <div style={{ gridColumn: "1 / -1", fontSize: 10, color: "#666", borderBottom: "1px solid #333", paddingBottom: 4 }}>Phase 1: Catapult (1,0)+(0,1)+(2,0)+(0,2)</div>
+        <label style={labelStyle}>duration ms <input type="number" step={5} value={params.catapult_ms}
           onChange={e => update("catapult_ms", e.target.value)} style={{ ...inputStyle, width: 55 }} disabled={running} /></label>
-        <label style={labelStyle}>catapult duty <input type="number" step={10} value={params.catapult_duty}
+        <label style={labelStyle}>duty <input type="number" step={10} value={params.catapult_duty}
           onChange={e => update("catapult_duty", e.target.value)} style={{ ...inputStyle, width: 55 }} disabled={running} /></label>
-        <label style={labelStyle}>catch ms <input type="number" step={10} value={params.catch_ms}
+
+        <div style={{ gridColumn: "1 / -1", fontSize: 10, color: "#666", borderBottom: "1px solid #333", paddingBottom: 4, paddingTop: 4 }}>Coast delay</div>
+        <label style={labelStyle}>delay ms <input type="number" step={5} value={params.delay1_ms}
+          onChange={e => update("delay1_ms", e.target.value)} style={{ ...inputStyle, width: 55 }} disabled={running} /></label>
+
+        <div style={{ gridColumn: "1 / -1", fontSize: 10, color: "#666", borderBottom: "1px solid #333", paddingBottom: 4, paddingTop: 4 }}>Phase 2: Catch (3,2)+(2,3)</div>
+        <label style={labelStyle}>duration ms <input type="number" step={10} value={params.catch_ms}
           onChange={e => update("catch_ms", e.target.value)} style={{ ...inputStyle, width: 55 }} disabled={running} /></label>
-        <label style={labelStyle}>catch duty <input type="number" step={10} value={params.catch_duty}
+        <label style={labelStyle}>duty <input type="number" step={10} value={params.catch_duty}
           onChange={e => update("catch_duty", e.target.value)} style={{ ...inputStyle, width: 55 }} disabled={running} /></label>
-        <label style={labelStyle}>center ms <input type="number" step={10} value={params.center_ms}
+
+        <div style={{ gridColumn: "1 / -1", fontSize: 10, color: "#666", borderBottom: "1px solid #333", paddingBottom: 4, paddingTop: 4 }}>Settle delay</div>
+        <label style={labelStyle}>delay ms <input type="number" step={5} value={params.delay2_ms}
+          onChange={e => update("delay2_ms", e.target.value)} style={{ ...inputStyle, width: 55 }} disabled={running} /></label>
+
+        <div style={{ gridColumn: "1 / -1", fontSize: 10, color: "#666", borderBottom: "1px solid #333", paddingBottom: 4, paddingTop: 4 }}>Phase 3: Center (3,3)</div>
+        <label style={labelStyle}>duration ms <input type="number" step={10} value={params.center_ms}
           onChange={e => update("center_ms", e.target.value)} style={{ ...inputStyle, width: 55 }} disabled={running} /></label>
       </div>
 
