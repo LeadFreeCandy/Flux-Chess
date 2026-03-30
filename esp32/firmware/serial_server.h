@@ -108,6 +108,21 @@ inline String handleGetPhysicsParams(Board& board, const String&) {
   return board.physicsParamsToJson();
 }
 
+inline String handleDiagonalTest(Board& board, const String& params) {
+  uint8_t fromX = jsonGet(params, "from_x").toInt();
+  uint8_t fromY = jsonGet(params, "from_y").toInt();
+  uint8_t toX = jsonGet(params, "to_x").toInt();
+  uint8_t toY = jsonGet(params, "to_y").toInt();
+  Board::DiagonalParams dp;
+  String v;
+  if ((v = jsonGet(params, "catapult_ms")).length())   dp.catapult_ms = v.toInt();
+  if ((v = jsonGet(params, "catapult_duty")).length())  dp.catapult_duty = v.toInt();
+  if ((v = jsonGet(params, "catch_ms")).length())       dp.catch_ms = v.toInt();
+  if ((v = jsonGet(params, "catch_duty")).length())     dp.catch_duty = v.toInt();
+  if ((v = jsonGet(params, "center_ms")).length())      dp.center_ms = v.toInt();
+  return board.diagonalTest(fromX, fromY, toX, toY, dp);
+}
+
 inline String handleHexapawnPlay(Board& board, const String& params) {
   uint16_t hint_ms = 0;
   String v = jsonGet(params, "hint_pulse_ms");
@@ -146,6 +161,7 @@ public:
     on("get_physics_params", handleGetPhysicsParams);
     on("tune_physics", handleTunePhysics);
     on("hexapawn_play", handleHexapawnPlay);
+    on("diagonal_test", handleDiagonalTest);
     on("set_rgb", handleSetRGB);
     on("calibrate", handleCalibrate);
     on("get_calibration", handleGetCalibration);

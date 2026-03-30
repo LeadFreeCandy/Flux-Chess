@@ -126,6 +126,31 @@ public:
     return true;
   }
 
+  // Activate multiple coils simultaneously. Clears all bits, sets requested bits, flushes.
+  bool startCoils(const uint8_t* bits, int count, uint8_t pwm_duty = 255) {
+    xSemaphoreTake(sr_mutex_, portMAX_DELAY);
+    memset(sr_state_, 0, sizeof(sr_state_));
+    for (int i = 0; i < count; i++) {
+      if (!validateBit(bits[i])) { xSemaphoreGive(sr_mutex_); return false; }
+      uint8_t reg = bits[i] / 8;
+      uint8_t pos = bits[i] % 8;
+      sr_state_[reg] |= (1 << pos);
+    }
+    srWriteInternal();
+    xSemaphoreGive(sr_mutex_);
+    srSetPWM(pwm_duty);
+    return true;
+  }
+
+  // Stop all coils and flush.
+  void stopAllCoils() {
+    srSetPWM(0);
+    xSemaphoreTake(sr_mutex_, portMAX_DELAY);
+    memset(sr_state_, 0, sizeof(sr_state_));
+    srWriteInternal();
+    xSemaphoreGive(sr_mutex_);
+  }
+
   // Turn off the active coil and flush to hardware.
   void stopCoil(uint8_t globalBit) {
     srSetPWM(0);

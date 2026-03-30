@@ -104,7 +104,6 @@ export interface SetPhysicsParamsRequest {
   all_coils_equal: boolean;
   force_scale: number;
   max_duration_ms: number;
-  max_retry_attempts: number;
 }
 
 export const commands = {
@@ -166,6 +165,22 @@ export function setPhysicsParams(params: SetPhysicsParamsRequest): Promise<Shutd
 
 export function getPhysicsParams(): Promise<GetCalibrationResponse> {
   return transport.call("get_physics_params", {});
+}
+
+export interface DiagonalTestRequest {
+  from_x: number;
+  from_y: number;
+  to_x: number;
+  to_y: number;
+  catapult_ms?: number;
+  catapult_duty?: number;
+  catch_ms?: number;
+  catch_duty?: number;
+  center_ms?: number;
+}
+
+export function diagonalTest(params: DiagonalTestRequest): Promise<{ success: boolean; error?: string }> {
+  return transport.call("diagonal_test", params);
 }
 
 export function tunePhysics(): Promise<GetCalibrationResponse> {

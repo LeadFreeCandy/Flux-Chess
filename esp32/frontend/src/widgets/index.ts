@@ -7,6 +7,7 @@ import HexapawnWidget from "./HexapawnWidget";
 import SpacedCoilsWidget from "./SpacedCoilsWidget";
 import MoveTestWidget from "./MoveTestWidget";
 import PhysicsSettingsWidget from "./PhysicsSettingsWidget";
+import DiagonalTestWidget from "./DiagonalTestWidget";
 
 export const WIDGET_REGISTRY = {
   surface: { title: "Magnetic Field", Component: SurfaceWidget },
@@ -15,6 +16,7 @@ export const WIDGET_REGISTRY = {
   hexapawn: { title: "Hexapawn Game", Component: HexapawnWidget },
   physics_settings: { title: "Physics Settings", Component: PhysicsSettingsWidget },
   move_test: { title: "Move Test", Component: MoveTestWidget },
+  diagonal_test: { title: "Diagonal Test", Component: DiagonalTestWidget },
   rgb: { title: "RGB Underglow", Component: RgbWidget },
   serial: { title: "Serial Console", Component: SerialWidget },
   spaced_coils: { title: "Spaced Coil Grid", Component: SpacedCoilsWidget }

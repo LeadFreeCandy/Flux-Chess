@@ -616,6 +616,105 @@ public:
     return moveOrthogonalClearing(fromX, fromY, toX, toY, 0, max_retry_attempts);
   }
 
+  // ── Diagonal Move Test ─────────────────────────────────────
+  // Attempts a diagonal move using symmetric coil pairs.
+  // Sequence: catapult with origin pair, coast through gap, catch with dest coils.
+  struct DiagonalParams {
+    uint16_t catapult_ms = 30;     // how long to hold catapult pair
+    uint8_t  catapult_duty = 255;  // catapult PWM duty
+    uint16_t catch_ms = 200;       // how long to hold destination coils
+    uint8_t  catch_duty = 255;     // catch PWM duty
+    uint16_t center_ms = 100;      // final centering pulse on dest
+  };
+
+  String diagonalTest(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
+                      const DiagonalParams& dp) {
+    LOG_BOARD("diag: (%d,%d)->(%d,%d) catapult=%dms catch=%dms",
+              fromX, fromY, toX, toY, dp.catapult_ms, dp.catch_ms);
+
+    int8_t stepX = (toX > fromX) ? 1 : (toX < fromX) ? -1 : 0;
+    int8_t stepY = (toY > fromY) ? 1 : (toY < fromY) ? -1 : 0;
+
+    // Must be diagonal
+    if (stepX == 0 || stepY == 0 || abs(toX - fromX) != abs(toY - fromY)) {
+      return Json().add("success", false).addStr("error", "not diagonal").build();
+    }
+
+    // Catapult pair: one coil in X direction, one in Y direction from origin
+    // e.g., from (0,0) going to (3,3): catapult coils are (1,0) and (0,1)
+    int8_t catA_bit = coordToBit(fromX + stepX, fromY);  // X-direction coil
+    int8_t catB_bit = coordToBit(fromX, fromY + stepY);  // Y-direction coil
+    if (catA_bit < 0 || catB_bit < 0) {
+      return Json().add("success", false).addStr("error", "no catapult coils").build();
+    }
+
+    // Mid-range coils: 2 steps out in each axis (if they exist)
+    int8_t midA_bit = coordToBit(fromX + stepX * 2, fromY);  // (2,0)
+    int8_t midB_bit = coordToBit(fromX, fromY + stepY * 2);  // (0,2)
+
+    // Destination block coils — pairs that create diagonal pull toward dest
+    // (toX, toY-2)+(toX-2, toY), (toX, toY-1)+(toX-1, toY), (toX, toY)
+    int8_t dstPair1A = coordToBit(toX, fromY + stepY);         // (3,1) for +step
+    int8_t dstPair1B = coordToBit(fromX + stepX, toY);         // (1,3) for +step
+    int8_t dstPair2A = coordToBit(toX, fromY + stepY * 2);     // (3,2) for +step
+    int8_t dstPair2B = coordToBit(fromX + stepX * 2, toY);     // (2,3) for +step
+    int8_t dstCenter = coordToBit(toX, toY);                    // (3,3)
+
+    LOG_BOARD("diag: catapult bits %d+%d, mid %d+%d", catA_bit, catB_bit, midA_bit, midB_bit);
+    LOG_BOARD("diag: dest pair1 %d+%d, pair2 %d+%d, center %d",
+              dstPair1A, dstPair1B, dstPair2A, dstPair2B, dstCenter);
+
+    // Phase 1: Catapult — fire origin pair at max for catapult_ms
+    {
+      uint8_t bits[] = { (uint8_t)catA_bit, (uint8_t)catB_bit };
+      hw_.startCoils(bits, 2, dp.catapult_duty);
+      LOG_BOARD("diag: CATAPULT %dms duty=%d", dp.catapult_ms, dp.catapult_duty);
+      delay(dp.catapult_ms);
+    }
+
+    // Phase 1b: If mid-range coils exist, fire them briefly to extend push
+    if (midA_bit >= 0 && midB_bit >= 0) {
+      uint8_t bits[] = { (uint8_t)midA_bit, (uint8_t)midB_bit };
+      hw_.startCoils(bits, 2, dp.catapult_duty);
+      LOG_BOARD("diag: MID-PUSH %dms", dp.catapult_ms / 2);
+      delay(dp.catapult_ms / 2);
+    }
+
+    // Phase 2: Catch — fire all destination coils that exist
+    {
+      uint8_t bits[5];
+      int n = 0;
+      if (dstPair1A >= 0) bits[n++] = (uint8_t)dstPair1A;
+      if (dstPair1B >= 0) bits[n++] = (uint8_t)dstPair1B;
+      if (dstPair2A >= 0) bits[n++] = (uint8_t)dstPair2A;
+      if (dstPair2B >= 0) bits[n++] = (uint8_t)dstPair2B;
+      if (dstCenter >= 0) bits[n++] = (uint8_t)dstCenter;
+
+      if (n > 0) {
+        hw_.startCoils(bits, n, dp.catch_duty);
+        LOG_BOARD("diag: CATCH %d coils %dms duty=%d", n, dp.catch_ms, dp.catch_duty);
+        delay(dp.catch_ms);
+      }
+    }
+
+    // Phase 3: Center — pulse destination coil only
+    hw_.stopAllCoils();
+    if (dstCenter >= 0 && dp.center_ms > 0) {
+      hw_.pulseBit((uint8_t)dstCenter, dp.center_ms, 255);
+      LOG_BOARD("diag: CENTER %dms", dp.center_ms);
+    }
+
+    hw_.stopAllCoils();
+
+    // Update board state
+    uint8_t piece = pieces_[fromX][fromY];
+    pieces_[fromX][fromY] = PIECE_NONE;
+    pieces_[toX][toY] = piece;
+
+    LOG_BOARD("diag: complete");
+    return Json().add("success", true).build();
+  }
+
   // Kill a piece by moving it to the graveyard.
   // Picks the graveyard slot that requires the fewest displacements.
   MoveError killPiece(uint8_t x, uint8_t y) {
