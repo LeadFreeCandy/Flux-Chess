@@ -717,6 +717,71 @@ public:
     return Json().add("success", true).build();
   }
 
+  // ── Edge Move Test ─────────────────────────────────────────
+  // Moves a piece along the edge between two coil columns (e.g., x=1.5)
+  // by activating symmetric pairs on both sides simultaneously.
+  struct EdgeMoveParams {
+    uint16_t pulse_ms = 100;
+    uint8_t  duty = 255;
+    uint16_t delay_ms = 50;
+    int      steps = 4;
+  };
+
+  String edgeMoveTest(bool up, const EdgeMoveParams& ep) {
+    // Coil pairs: (0,y)+(3,y) for y = 0,1,2,3
+    // "up" goes y=0→3, "down" goes y=3→0
+    LOG_BOARD("edge: %s pulse=%dms duty=%d delay=%dms steps=%d",
+              up ? "UP" : "DOWN", ep.pulse_ms, ep.duty, ep.delay_ms, ep.steps);
+
+    int start = up ? 0 : 3;
+    int step = up ? 1 : -1;
+    int n = (ep.steps > 4) ? 4 : ep.steps;
+
+    for (int i = 0; i < n; i++) {
+      int y = start + step * i;
+      if (y < 0 || y > 3) break;
+
+      // Grid positions: left coil at (0, y*3), right coil at (3, y*3)
+      // But coordToBit only works for valid L-pattern positions
+      uint8_t gy = (uint8_t)(y * 3);  // 0, 3, 6, 9
+      int8_t leftBit = coordToBit(0, gy);
+      int8_t rightBit = coordToBit(3, gy);
+
+      if (leftBit < 0 || rightBit < 0) {
+        LOG_BOARD("edge: step %d y=%d: invalid coil (left=%d right=%d)", i, y, leftBit, rightBit);
+        continue;
+      }
+
+      uint8_t bits[] = { (uint8_t)leftBit, (uint8_t)rightBit };
+      hw_.startCoils(bits, 2, ep.duty);
+      LOG_BOARD("edge: step %d coils (%d,%d)+(%d,%d) bits %d+%d %dms",
+                i, 0, gy, 3, gy, leftBit, rightBit, ep.pulse_ms);
+      delay(ep.pulse_ms);
+      hw_.stopAllCoils();
+
+      if (i < n - 1) {
+        delay(ep.delay_ms);
+      }
+    }
+
+    // Final centering pulse on last position
+    int lastY = start + step * (n - 1);
+    uint8_t lastGy = (uint8_t)(lastY * 3);
+    int8_t leftBit = coordToBit(0, lastGy);
+    int8_t rightBit = coordToBit(3, lastGy);
+    if (leftBit >= 0 && rightBit >= 0) {
+      delay(50);
+      uint8_t bits[] = { (uint8_t)leftBit, (uint8_t)rightBit };
+      hw_.startCoils(bits, 2, 255);
+      LOG_BOARD("edge: CENTER at y=%d %dms", lastY, 100);
+      delay(100);
+      hw_.stopAllCoils();
+    }
+
+    LOG_BOARD("edge: complete");
+    return Json().add("success", true).build();
+  }
+
   // Kill a piece by moving it to the graveyard.
   // Picks the graveyard slot that requires the fewest displacements.
   MoveError killPiece(uint8_t x, uint8_t y) {

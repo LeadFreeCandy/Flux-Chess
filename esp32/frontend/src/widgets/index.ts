@@ -8,6 +8,7 @@ import SpacedCoilsWidget from "./SpacedCoilsWidget";
 import MoveTestWidget from "./MoveTestWidget";
 import PhysicsSettingsWidget from "./PhysicsSettingsWidget";
 import DiagonalTestWidget from "./DiagonalTestWidget";
+import EdgeMoveTestWidget from "./EdgeMoveTestWidget";
 
 export const WIDGET_REGISTRY = {
   surface: { title: "Magnetic Field", Component: SurfaceWidget },
@@ -17,6 +18,7 @@ export const WIDGET_REGISTRY = {
   physics_settings: { title: "Physics Settings", Component: PhysicsSettingsWidget },
   move_test: { title: "Move Test", Component: MoveTestWidget },
   diagonal_test: { title: "Diagonal Test", Component: DiagonalTestWidget },
+  edge_move: { title: "Edge Move Test", Component: EdgeMoveTestWidget },
   rgb: { title: "RGB Underglow", Component: RgbWidget },
   serial: { title: "Serial Console", Component: SerialWidget },
   spaced_coils: { title: "Spaced Coil Grid", Component: SpacedCoilsWidget }

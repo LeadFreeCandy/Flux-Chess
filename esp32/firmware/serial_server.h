@@ -125,6 +125,17 @@ inline String handleDiagonalTest(Board& board, const String& params) {
   return board.diagonalTest(fromX, fromY, toX, toY, dp);
 }
 
+inline String handleEdgeMoveTest(Board& board, const String& params) {
+  bool up = jsonGet(params, "direction") != "down";
+  Board::EdgeMoveParams ep;
+  String v;
+  if ((v = jsonGet(params, "pulse_ms")).length()) ep.pulse_ms = v.toInt();
+  if ((v = jsonGet(params, "duty")).length())     ep.duty = v.toInt();
+  if ((v = jsonGet(params, "delay_ms")).length()) ep.delay_ms = v.toInt();
+  if ((v = jsonGet(params, "steps")).length())    ep.steps = v.toInt();
+  return board.edgeMoveTest(up, ep);
+}
+
 inline String handleHexapawnPlay(Board& board, const String& params) {
   uint16_t hint_ms = 0;
   String v = jsonGet(params, "hint_pulse_ms");
@@ -164,6 +175,7 @@ public:
     on("tune_physics", handleTunePhysics);
     on("hexapawn_play", handleHexapawnPlay);
     on("diagonal_test", handleDiagonalTest);
+    on("edge_move_test", handleEdgeMoveTest);
     on("set_rgb", handleSetRGB);
     on("calibrate", handleCalibrate);
     on("get_calibration", handleGetCalibration);
