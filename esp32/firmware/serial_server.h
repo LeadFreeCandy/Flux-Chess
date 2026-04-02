@@ -100,6 +100,7 @@ inline String handleSetPhysicsParams(Board& board, const String& params) {
   if ((v = jsonGet(params, "force_scale")).length())          p.force_scale = v.toFloat();
   if ((v = jsonGet(params, "max_duration_ms")).length())      p.max_duration_ms = v.toInt();
   if ((v = jsonGet(params, "max_retry_attempts")).length())  p.max_retry_attempts = v.toInt();
+  if ((v = jsonGet(params, "tick_ms")).length())             p.tick_ms = v.toInt();
   board.setPhysicsParams(p);
   return board.physicsParamsToJson();
 }

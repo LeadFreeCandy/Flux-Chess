@@ -37,6 +37,7 @@ struct PhysicsParams {
   float force_scale        = 1.0f;  // multiplier on force table values (tune sim vs reality gap)
   uint16_t max_duration_ms = 5000;
   uint8_t max_retry_attempts = 0;  // 0=no checkpoint recovery, >0=retry with moveDumb on failure
+  uint8_t tick_ms = 10;            // physics tick period in ms (affects coil buzz frequency)
 };
 
 
@@ -412,6 +413,293 @@ public:
       }
     }
     return MoveError::COIL_FAILURE;
+  }
+
+  // ── Multi-move: simultaneous piece movement ──────────────
+  // Discrete on/off per coil — no PWM. OE stays low (enabled).
+  // Each tick: decide per-move whether coil is on or off,
+  // combine all active bits into one SR write, hold for tick_ms.
+
+  static constexpr int MAX_SIMULTANEOUS_MOVES = 4;
+
+  struct MoveSlot {
+    bool active = false;
+    PieceState* piece = nullptr;
+    const float (*path_mm)[2] = nullptr;
+    int path_len = 0;
+    int coil_idx = 0;
+    float cx, cy;          // current coil center
+    float dx, dy;          // total move delta
+    bool moveX;
+    float move_sign;
+    int8_t activeBit = -1;
+    int activeLayer = 0;
+    bool coil_on = false;  // whether this move's coil should be on this tick
+    bool coasting = false;
+    bool centered = false;
+    bool arrived = false;
+    MoveError error = MoveError::COIL_FAILURE;
+    int coil_switches = 0;
+    float max_speed = 0;
+  };
+
+  MoveSlot slots_[MAX_SIMULTANEOUS_MOVES];
+  int num_queued_ = 0;
+
+  void clearQueue() {
+    for (int i = 0; i < MAX_SIMULTANEOUS_MOVES; i++) slots_[i].active = false;
+    num_queued_ = 0;
+  }
+
+  bool queueMove(PieceState& piece, const float path_mm[][2], int path_len) {
+    if (num_queued_ >= MAX_SIMULTANEOUS_MOVES || path_len < 1) return false;
+    MoveSlot& s = slots_[num_queued_];
+    s.active = true;
+    s.piece = &piece;
+    s.path_mm = path_mm;
+    s.path_len = path_len;
+    s.coil_idx = 0;
+    s.cx = path_mm[0][0];
+    s.cy = path_mm[0][1];
+    s.dx = path_mm[path_len-1][0] - piece.x;
+    s.dy = path_mm[path_len-1][1] - piece.y;
+    s.moveX = (fabsf(s.dx) > fabsf(s.dy));
+    s.move_sign = s.moveX ? (s.dx > 0 ? 1.0f : -1.0f) : (s.dy > 0 ? 1.0f : -1.0f);
+    s.activeBit = coordToBit((uint8_t)(s.cx / GRID_TO_MM + 0.5f),
+                              (uint8_t)(s.cy / GRID_TO_MM + 0.5f));
+    s.activeLayer = 0; // all_coils_equal for now
+    s.coil_on = false;
+    s.coasting = false;
+    s.centered = false;
+    s.arrived = false;
+    s.error = MoveError::COIL_FAILURE;
+    s.coil_switches = 0;
+    s.max_speed = 0;
+    num_queued_++;
+    return true;
+  }
+
+  // Execute all queued moves simultaneously. Returns when all are done or timeout.
+  void executeMulti(const PhysicsParams& params) {
+    if (num_queued_ == 0) return;
+
+    float weight_mN = params.piece_mass_g * 9.81f;
+    float mass_kg = params.piece_mass_g * 1e-3f;
+    float dt = params.tick_ms * 0.001f;
+
+    static constexpr float COAST_TOLERANCE_MM = 3.0f;
+    static constexpr float ARRIVAL_DIST_MM = 1.0f;
+    static constexpr float ARRIVAL_SPEED_MM_S = 5.0f;
+    static constexpr float CENTERED_SPEED_MM_S = 10.0f;
+    static constexpr float SPEED_CLAMP_FACTOR = 1.5f;
+
+    // Unstick all pieces
+    for (int i = 0; i < num_queued_; i++) {
+      MoveSlot& s = slots_[i];
+      if (s.activeBit < 0) { s.arrived = true; s.error = MoveError::COIL_FAILURE; continue; }
+      s.piece->stuck = false; // force unstick — discrete mode can't do gradual unstick
+    }
+
+    unsigned long t0 = millis();
+    int tick_count = 0;
+
+    LOG_BOARD("physics: multi-move start, %d moves, tick=%dms", num_queued_, params.tick_ms);
+
+    while (millis() - t0 < params.max_duration_ms) {
+      // Check if all moves are done
+      bool all_done = true;
+      for (int i = 0; i < num_queued_; i++) {
+        if (slots_[i].active && !slots_[i].arrived) { all_done = false; break; }
+      }
+      if (all_done) break;
+
+      // ── Per-move tick logic ──
+      for (int i = 0; i < num_queued_; i++) {
+        MoveSlot& s = slots_[i];
+        if (!s.active || s.arrived) continue;
+        PieceState& p = *s.piece;
+
+        float off_x = p.x - s.cx;
+        float off_y = p.y - s.cy;
+
+        float fx_1a = tableForceFx(s.activeLayer, off_x, off_y) * params.force_scale;
+        float fy_1a = tableForceFy(s.activeLayer, off_x, off_y) * params.force_scale;
+        float fz_1a = tableForceFz(s.activeLayer, off_x, off_y) * params.force_scale;
+
+        float speed = sqrtf(p.vx * p.vx + p.vy * p.vy);
+        float v_along = (s.moveX ? p.vx : p.vy) * s.move_sign;
+
+        // Coast check
+        if (!s.coasting) {
+          float dest_x = s.path_mm[s.path_len-1][0];
+          float dest_y = s.path_mm[s.path_len-1][1];
+          float dist_remain = s.moveX ? (dest_x - p.x) * s.move_sign : (dest_y - p.y) * s.move_sign;
+          float coast_mu = params.mu_kinetic + params.coast_friction_offset;
+          float friction_decel = coast_mu * weight_mN / mass_kg;
+          float stopping_dist = (friction_decel > 0.01f) ? (v_along * v_along) / (2.0f * friction_decel) : 9999.0f;
+
+          if (v_along > 0 && dist_remain > 0 && stopping_dist >= dist_remain) {
+            s.coasting = true;
+            s.coil_on = false;
+            LOG_BOARD("physics: move %d coast v=%.1f stop=%.1f remain=%.1f", i, v_along, stopping_dist, dist_remain);
+          }
+        }
+
+        float fx = 0, fy = 0;
+        float normal_mN = weight_mN; // default: gravity only
+
+        if (s.coasting) {
+          s.coil_on = false;
+
+          // Centering pulse when stopped
+          float dest_x = s.path_mm[s.path_len-1][0];
+          float dest_y = s.path_mm[s.path_len-1][1];
+          float d_dest = sqrtf((p.x-dest_x)*(p.x-dest_x) + (p.y-dest_y)*(p.y-dest_y));
+          if (!s.centered && params.brake_pulse_ms > 0 &&
+              (d_dest < COAST_TOLERANCE_MM || speed < 0.5f) && speed < 20.0f) {
+            int8_t destBit = coordToBit((uint8_t)(dest_x / GRID_TO_MM + 0.5f),
+                                        (uint8_t)(dest_y / GRID_TO_MM + 0.5f));
+            if (destBit >= 0) {
+              hw_.pulseBit((uint8_t)destBit, params.brake_pulse_ms, 255);
+              s.centered = true;
+              LOG_BOARD("physics: move %d center pulse %dms", i, params.brake_pulse_ms);
+            }
+          }
+        } else {
+          // Discrete on/off: coil ON if below target velocity, OFF if above
+          s.coil_on = (v_along < params.target_velocity_mm_s);
+
+          if (s.coil_on) {
+            normal_mN = fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
+            fx = fx_1a * params.max_current_a;
+            fy = fy_1a * params.max_current_a;
+          }
+        }
+
+        // Friction
+        float mu_fric = s.coasting ? (params.mu_kinetic + params.coast_friction_offset) : params.mu_kinetic;
+        if (speed > 0.1f) {
+          float fric = mu_fric * fmaxf(normal_mN, 0);
+          float max_fric = speed / dt * mass_kg;
+          if (fric > max_fric) fric = max_fric;
+          fx -= fric * (p.vx / speed);
+          fy -= fric * (p.vy / speed);
+        }
+
+        // Integrate
+        float ax = fx / mass_kg, ay = fy / mass_kg;
+        if (!s.coasting) {
+          float amag = sqrtf(ax * ax + ay * ay);
+          if (amag > params.target_accel_mm_s2 * 3.0f) {
+            float sc = params.target_accel_mm_s2 * 3.0f / amag;
+            ax *= sc; ay *= sc;
+          }
+        }
+        p.vx += ax * dt;
+        p.vy += ay * dt;
+
+        speed = sqrtf(p.vx * p.vx + p.vy * p.vy);
+        if (speed > params.target_velocity_mm_s * SPEED_CLAMP_FACTOR) {
+          float sc = params.target_velocity_mm_s * SPEED_CLAMP_FACTOR / speed;
+          p.vx *= sc; p.vy *= sc;
+        }
+        if (speed > s.max_speed) s.max_speed = speed;
+
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+
+        // Coil switching (net-accel comparison)
+        if (!s.coasting && s.coil_idx < s.path_len - 1) {
+          float next_cx = s.path_mm[s.coil_idx + 1][0];
+          float next_cy = s.path_mm[s.coil_idx + 1][1];
+          float n_off_x = p.x - next_cx, n_off_y = p.y - next_cy;
+
+          float cur_fx = s.moveX ? fx_1a : fy_1a;
+          float cur_fwd = cur_fx * s.move_sign * params.max_current_a;
+          float cur_norm = fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
+          float cur_net = cur_fwd - params.mu_kinetic * cur_norm;
+
+          int nextLayer = 0;
+          float nfx_1a = tableForceFx(nextLayer, n_off_x, n_off_y) * params.force_scale;
+          float nfy_1a = tableForceFy(nextLayer, n_off_x, n_off_y) * params.force_scale;
+          float nfz_1a = tableForceFz(nextLayer, n_off_x, n_off_y) * params.force_scale;
+          float next_fx = s.moveX ? nfx_1a : nfy_1a;
+          float next_fwd = next_fx * s.move_sign * params.max_current_a;
+          float next_norm = fmaxf(weight_mN - nfz_1a * params.max_current_a, 0.0f);
+          float next_net = next_fwd - params.mu_kinetic * next_norm;
+
+          if (next_net > cur_net) {
+            s.coil_idx++;
+            s.cx = next_cx; s.cy = next_cy;
+            s.activeBit = coordToBit((uint8_t)(s.cx / GRID_TO_MM + 0.5f),
+                                      (uint8_t)(s.cy / GRID_TO_MM + 0.5f));
+            s.activeLayer = 0;
+            s.coil_switches++;
+          }
+        }
+
+        // Arrival check
+        float dest_x = s.path_mm[s.path_len-1][0];
+        float dest_y = s.path_mm[s.path_len-1][1];
+        float d_dest = sqrtf((p.x-dest_x)*(p.x-dest_x) + (p.y-dest_y)*(p.y-dest_y));
+        bool arrived = (s.centered && speed < CENTERED_SPEED_MM_S) ||
+                       (d_dest < ARRIVAL_DIST_MM && speed < ARRIVAL_SPEED_MM_S);
+        if (arrived) {
+          p.x = dest_x; p.y = dest_y;
+          p.vx = 0; p.vy = 0;
+          p.stuck = true;
+          s.arrived = true;
+          s.error = MoveError::NONE;
+          s.coil_on = false;
+          unsigned long t = millis() - t0;
+          LOG_BOARD("physics: move %d ARRIVED t=%lums max_v=%.0f switches=%d",
+                    i, t, s.max_speed, s.coil_switches);
+        }
+      }
+
+      // ── Combine all active coil bits into one SR write ──
+      uint8_t active_bits[MAX_SIMULTANEOUS_MOVES];
+      int n_active = 0;
+      for (int i = 0; i < num_queued_; i++) {
+        if (slots_[i].active && !slots_[i].arrived && slots_[i].coil_on && slots_[i].activeBit >= 0) {
+          active_bits[n_active++] = (uint8_t)slots_[i].activeBit;
+        }
+      }
+
+      if (n_active > 0) {
+        hw_.startCoils(active_bits, n_active, 255);
+      } else {
+        hw_.stopAllCoils();
+      }
+
+      // Hold for tick duration
+      delay(params.tick_ms);
+
+      // Log every 10 ticks
+      tick_count++;
+      if (tick_count % 10 == 0) {
+        unsigned long elapsed = millis() - t0;
+        for (int i = 0; i < num_queued_; i++) {
+          MoveSlot& s = slots_[i];
+          if (!s.active || s.arrived) continue;
+          LOG_BOARD("physics: t=%lums m%d pos=(%.1f,%.1f) v=(%.1f,%.1f) %s%s",
+                    elapsed, i, s.piece->x, s.piece->y, s.piece->vx, s.piece->vy,
+                    s.coil_on ? "ON" : "off", s.coasting ? " COAST" : "");
+        }
+      }
+    }
+
+    // Cleanup: stop all coils
+    hw_.stopAllCoils();
+
+    // Report any moves that didn't arrive
+    for (int i = 0; i < num_queued_; i++) {
+      if (slots_[i].active && !slots_[i].arrived) {
+        LOG_BOARD("physics: move %d TIMEOUT pos=(%.1f,%.1f) v=(%.1f,%.1f)",
+                  i, slots_[i].piece->x, slots_[i].piece->y,
+                  slots_[i].piece->vx, slots_[i].piece->vy);
+      }
+    }
   }
 
 private:

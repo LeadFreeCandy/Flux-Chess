@@ -1376,6 +1376,7 @@ public:
     j += ",\"force_scale\":"; j += String(p.force_scale, 2);
     j += ",\"max_duration_ms\":"; j += String(p.max_duration_ms);
     j += ",\"max_retry_attempts\":"; j += String(p.max_retry_attempts);
+    j += ",\"tick_ms\":"; j += String(p.tick_ms);
     j += "}";
     return j;
   }
@@ -1428,6 +1429,7 @@ private:
     physics_params_.force_scale        = prefs_.getFloat("f_scale", physics_params_.force_scale);
     physics_params_.max_duration_ms    = prefs_.getUShort("timeout", physics_params_.max_duration_ms);
     physics_params_.max_retry_attempts = prefs_.getUChar("retries", physics_params_.max_retry_attempts);
+    physics_params_.tick_ms            = prefs_.getUChar("tick_ms", physics_params_.tick_ms);
     prefs_.end();
     LOG_BOARD("physics params loaded from NVS (I=%.2fA v=%.0f a=%.0f)",
               physics_params_.max_current_a, physics_params_.target_velocity_mm_s, physics_params_.target_accel_mm_s2);
@@ -1450,6 +1452,7 @@ private:
     prefs_.putFloat("f_scale", physics_params_.force_scale);
     prefs_.putUShort("timeout", physics_params_.max_duration_ms);
     prefs_.putUChar("retries", physics_params_.max_retry_attempts);
+    prefs_.putUChar("tick_ms", physics_params_.tick_ms);
     prefs_.end();
   }
 
