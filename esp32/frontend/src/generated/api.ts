@@ -157,6 +157,25 @@ export function movePiece(params: MoveDumbRequest): Promise<MoveResponse> {
   return transport.call("move_piece", params);
 }
 
+export interface MultiMoveItem {
+  from_x: number;
+  from_y: number;
+  to_x: number;
+  to_y: number;
+}
+
+export function moveMulti(moves: MultiMoveItem[]): Promise<{ success: boolean; moves?: boolean[] }> {
+  // Flatten into indexed params: 0_from_x, 0_from_y, etc.
+  const params: Record<string, number> = {};
+  moves.forEach((m, i) => {
+    params[`${i}_from_x`] = m.from_x;
+    params[`${i}_from_y`] = m.from_y;
+    params[`${i}_to_x`] = m.to_x;
+    params[`${i}_to_y`] = m.to_y;
+  });
+  return transport.call("move_multi", params);
+}
+
 export function hexapawnPlay(): Promise<GetCalibrationResponse> {
   return transport.call("hexapawn_play", {});
 }

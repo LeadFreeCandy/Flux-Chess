@@ -126,6 +126,30 @@ inline String handleDiagonalTest(Board& board, const String& params) {
   return board.diagonalTest(fromX, fromY, toX, toY, dp);
 }
 
+inline String handleMoveMulti(Board& board, const String& params) {
+  // Parse array of moves: "moves": [{"from_x":0,"from_y":0,"to_x":3,"to_y":0}, ...]
+  // Simple parsing: look for from_x/from_y/to_x/to_y with index suffixes
+  Board::MultiMoveRequest moves[Board::MAX_MULTI_MOVES];
+  int count = 0;
+
+  for (int i = 0; i < Board::MAX_MULTI_MOVES; i++) {
+    String prefix = String(i) + "_";
+    String fx = jsonGet(params, (prefix + "from_x").c_str());
+    if (!fx.length()) break;
+    moves[count].from_x = fx.toInt();
+    moves[count].from_y = jsonGet(params, (prefix + "from_y").c_str()).toInt();
+    moves[count].to_x = jsonGet(params, (prefix + "to_x").c_str()).toInt();
+    moves[count].to_y = jsonGet(params, (prefix + "to_y").c_str()).toInt();
+    count++;
+  }
+
+  if (count == 0) {
+    return Json().add("success", false).addStr("error", "no moves").build();
+  }
+
+  return board.moveMulti(moves, count);
+}
+
 inline String handleEdgeMoveTest(Board& board, const String& params) {
   bool up = jsonGet(params, "direction") != "down";
   Board::EdgeMoveParams ep;
@@ -177,6 +201,7 @@ public:
     on("hexapawn_play", handleHexapawnPlay);
     on("diagonal_test", handleDiagonalTest);
     on("edge_move_test", handleEdgeMoveTest);
+    on("move_multi", handleMoveMulti);
     on("set_rgb", handleSetRGB);
     on("calibrate", handleCalibrate);
     on("get_calibration", handleGetCalibration);

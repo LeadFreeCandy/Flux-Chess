@@ -616,6 +616,106 @@ public:
     return moveOrthogonalClearing(fromX, fromY, toX, toY, 0, max_retry_attempts);
   }
 
+  // ── Multi Move (simultaneous) ──────────────────────────────
+  // Moves multiple pieces simultaneously using discrete on/off coil control.
+
+  static constexpr int MAX_MULTI_MOVES = 4;
+  static constexpr int MAX_PATH_LEN = GRID_COLS + GRID_ROWS;
+
+  struct MultiMoveRequest {
+    uint8_t from_x, from_y, to_x, to_y;
+  };
+
+  String moveMulti(const MultiMoveRequest* moves, int count) {
+    if (count <= 0 || count > MAX_MULTI_MOVES) {
+      return Json().add("success", false).addStr("error", "invalid count").build();
+    }
+
+    const PhysicsParams& params = physics_params_;
+
+    // Validate all moves first
+    for (int i = 0; i < count; i++) {
+      const auto& m = moves[i];
+      if (m.from_x >= GRID_COLS || m.from_y >= GRID_ROWS ||
+          m.to_x >= GRID_COLS || m.to_y >= GRID_ROWS) {
+        LOG_BOARD("moveMulti: move %d out of bounds", i);
+        return Json().add("success", false).addStr("error", "out of bounds").build();
+      }
+      if (m.from_x == m.to_x && m.from_y == m.to_y) continue; // skip no-ops
+      if (m.from_x != m.to_x && m.from_y != m.to_y) {
+        LOG_BOARD("moveMulti: move %d not orthogonal", i);
+        return Json().add("success", false).addStr("error", "not orthogonal").build();
+      }
+    }
+
+    // Build paths and queue moves
+    // Static storage for paths (can't use VLA in queued context)
+    static float paths[MAX_MULTI_MOVES][MAX_PATH_LEN][2];
+    static int path_lens[MAX_MULTI_MOVES];
+    static PieceState states[MAX_MULTI_MOVES];
+
+    physics_.clearQueue();
+
+    int queued = 0;
+    for (int i = 0; i < count; i++) {
+      const auto& m = moves[i];
+      if (m.from_x == m.to_x && m.from_y == m.to_y) continue;
+
+      int8_t stepX = (m.to_x > m.from_x) ? 1 : (m.to_x < m.from_x) ? -1 : 0;
+      int8_t stepY = (m.to_y > m.from_y) ? 1 : (m.to_y < m.from_y) ? -1 : 0;
+
+      int plen = 0;
+      int8_t cx = m.from_x, cy = m.from_y;
+      while (cx != m.to_x || cy != m.to_y) {
+        cx += stepX; cy += stepY;
+        paths[queued][plen][0] = cx * GRID_TO_MM;
+        paths[queued][plen][1] = cy * GRID_TO_MM;
+        plen++;
+      }
+      path_lens[queued] = plen;
+
+      states[queued].reset(m.from_x * GRID_TO_MM, m.from_y * GRID_TO_MM);
+
+      LOG_BOARD("moveMulti: queue move %d (%d,%d)->(%d,%d) path_len=%d",
+                queued, m.from_x, m.from_y, m.to_x, m.to_y, plen);
+
+      physics_.queueMove(states[queued], paths[queued], plen);
+      queued++;
+    }
+
+    if (queued == 0) {
+      return Json().add("success", true).addStr("info", "no moves").build();
+    }
+
+    // Execute all simultaneously
+    physics_.executeMulti(params);
+
+    // Update board state for successful moves
+    bool all_ok = true;
+    String results = "[";
+    int qi = 0;
+    for (int i = 0; i < count; i++) {
+      const auto& m = moves[i];
+      if (m.from_x == m.to_x && m.from_y == m.to_y) continue;
+
+      bool ok = (physics_.slots_[qi].error == MoveError::NONE);
+      if (ok) {
+        uint8_t piece = pieces_[m.from_x][m.from_y];
+        pieces_[m.from_x][m.from_y] = PIECE_NONE;
+        pieces_[m.to_x][m.to_y] = piece;
+      } else {
+        all_ok = false;
+      }
+
+      if (qi > 0) results += ",";
+      results += ok ? "true" : "false";
+      qi++;
+    }
+    results += "]";
+
+    return Json().add("success", all_ok).addRaw("moves", results).build();
+  }
+
   // ── Diagonal Move Test ─────────────────────────────────────
   // Attempts a diagonal move using symmetric coil pairs.
   // Sequence: catapult with origin pair, coast through gap, catch with dest coils.
