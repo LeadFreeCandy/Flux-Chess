@@ -642,9 +642,12 @@ public:
         return Json().add("success", false).addStr("error", "out of bounds").build();
       }
       if (m.from_x == m.to_x && m.from_y == m.to_y) continue; // skip no-ops
+      // Diagonal moves must have equal X and Y deltas
       if (m.from_x != m.to_x && m.from_y != m.to_y) {
-        LOG_BOARD("moveMulti: move %d not orthogonal", i);
-        return Json().add("success", false).addStr("error", "not orthogonal").build();
+        if (abs((int)m.to_x - (int)m.from_x) != abs((int)m.to_y - (int)m.from_y)) {
+          LOG_BOARD("moveMulti: move %d not orthogonal or diagonal", i);
+          return Json().add("success", false).addStr("error", "not orthogonal or diagonal").build();
+        }
       }
     }
 
@@ -661,25 +664,31 @@ public:
       const auto& m = moves[i];
       if (m.from_x == m.to_x && m.from_y == m.to_y) continue;
 
-      int8_t stepX = (m.to_x > m.from_x) ? 1 : (m.to_x < m.from_x) ? -1 : 0;
-      int8_t stepY = (m.to_y > m.from_y) ? 1 : (m.to_y < m.from_y) ? -1 : 0;
-
-      int plen = 0;
-      int8_t cx = m.from_x, cy = m.from_y;
-      while (cx != m.to_x || cy != m.to_y) {
-        cx += stepX; cy += stepY;
-        paths[queued][plen][0] = cx * GRID_TO_MM;
-        paths[queued][plen][1] = cy * GRID_TO_MM;
-        plen++;
-      }
-      path_lens[queued] = plen;
-
+      bool isDiagonal = (m.from_x != m.to_x && m.from_y != m.to_y);
       states[queued].reset(m.from_x * GRID_TO_MM, m.from_y * GRID_TO_MM);
 
-      LOG_BOARD("moveMulti: queue move %d (%d,%d)->(%d,%d) path_len=%d",
-                queued, m.from_x, m.from_y, m.to_x, m.to_y, plen);
+      if (isDiagonal) {
+        LOG_BOARD("moveMulti: queue DIAGONAL %d (%d,%d)->(%d,%d)",
+                  queued, m.from_x, m.from_y, m.to_x, m.to_y);
+        physics_.queueDiagonalMove(states[queued], m.from_x, m.from_y, m.to_x, m.to_y);
+      } else {
+        int8_t stepX = (m.to_x > m.from_x) ? 1 : (m.to_x < m.from_x) ? -1 : 0;
+        int8_t stepY = (m.to_y > m.from_y) ? 1 : (m.to_y < m.from_y) ? -1 : 0;
 
-      physics_.queueMove(states[queued], paths[queued], plen);
+        int plen = 0;
+        int8_t cx = m.from_x, cy = m.from_y;
+        while (cx != m.to_x || cy != m.to_y) {
+          cx += stepX; cy += stepY;
+          paths[queued][plen][0] = cx * GRID_TO_MM;
+          paths[queued][plen][1] = cy * GRID_TO_MM;
+          plen++;
+        }
+        path_lens[queued] = plen;
+
+        LOG_BOARD("moveMulti: queue ORTHO %d (%d,%d)->(%d,%d) path_len=%d",
+                  queued, m.from_x, m.from_y, m.to_x, m.to_y, plen);
+        physics_.queueMove(states[queued], paths[queued], plen);
+      }
       queued++;
     }
 
