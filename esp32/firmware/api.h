@@ -197,6 +197,31 @@ struct SetPhysicsParamsRequest {
   bool all_coils_equal;
   float force_scale;
   uint16_t max_duration_ms;
+  uint8_t max_retry_attempts;
+  uint8_t tick_ms;
+};
+
+struct DiagonalTestRequest {
+  uint8_t from_x;
+  uint8_t from_y;
+  uint8_t to_x;
+  uint8_t to_y;
+  uint16_t catapult_ms;
+  uint8_t catapult_duty;
+  uint16_t delay1_ms;
+  uint16_t catch_ms;
+  uint8_t catch_duty;
+  uint16_t delay2_ms;
+  uint16_t center_ms;
+};
+
+struct DiagonalTestResponse {
+  bool success;
+  String toJson() const { return Json().add("success", success).build(); }
+};
+
+struct MoveMultiRequest {
+  uint8_t count;
 };
 
 // ── Command Table ─────────────────────────────────────────────
@@ -215,3 +240,6 @@ struct SetPhysicsParamsRequest {
 // API_COMMAND(tune_physics, POST, /api/tune_physics, CalibrateRequest, GetCalibrationResponse)
 // API_COMMAND(calibrate, POST, /api/calibrate, CalibrateRequest, CalibrateResponse)
 // API_COMMAND(get_calibration, GET, /api/calibration, GetCalibrationRequest, GetCalibrationResponse)
+// API_COMMAND(diagonal_test, POST, /api/diagonal_test, DiagonalTestRequest, DiagonalTestResponse)
+// API_COMMAND(move_multi, POST, /api/move_multi, MoveMultiRequest, MoveResponse)
+// API_COMMAND(edge_move_test, POST, /api/edge_move_test, MoveMultiRequest, DiagonalTestResponse)

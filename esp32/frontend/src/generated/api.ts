@@ -108,6 +108,28 @@ export interface SetPhysicsParamsRequest {
   tick_ms: number;
 }
 
+export interface DiagonalTestRequest {
+  from_x: number;
+  from_y: number;
+  to_x: number;
+  to_y: number;
+  catapult_ms: number;
+  catapult_duty: number;
+  delay1_ms: number;
+  catch_ms: number;
+  catch_duty: number;
+  delay2_ms: number;
+  center_ms: number;
+}
+
+export interface DiagonalTestResponse {
+  success: boolean;
+}
+
+export interface MoveMultiRequest {
+  count: number;
+}
+
 export const commands = {
   shutdown: { method: "POST", path: "/api/shutdown" },
   pulse_coil: { method: "POST", path: "/api/pulse_coil" },
@@ -123,6 +145,9 @@ export const commands = {
   tune_physics: { method: "POST", path: "/api/tune_physics" },
   calibrate: { method: "POST", path: "/api/calibrate" },
   get_calibration: { method: "GET", path: "/api/calibration" },
+  diagonal_test: { method: "POST", path: "/api/diagonal_test" },
+  move_multi: { method: "POST", path: "/api/move_multi" },
+  edge_move_test: { method: "POST", path: "/api/edge_move_test" },
 } as const;
 
 export function shutdown(): Promise<ShutdownResponse> {
@@ -157,25 +182,6 @@ export function movePiece(params: MoveDumbRequest): Promise<MoveResponse> {
   return transport.call("move_piece", params);
 }
 
-export interface MultiMoveItem {
-  from_x: number;
-  from_y: number;
-  to_x: number;
-  to_y: number;
-}
-
-export function moveMulti(moves: MultiMoveItem[]): Promise<{ success: boolean; moves?: boolean[] }> {
-  // Flatten into indexed params: 0_from_x, 0_from_y, etc.
-  const params: Record<string, number> = {};
-  moves.forEach((m, i) => {
-    params[`${i}_from_x`] = m.from_x;
-    params[`${i}_from_y`] = m.from_y;
-    params[`${i}_to_x`] = m.to_x;
-    params[`${i}_to_y`] = m.to_y;
-  });
-  return transport.call("move_multi", params);
-}
-
 export function hexapawnPlay(): Promise<GetCalibrationResponse> {
   return transport.call("hexapawn_play", {});
 }
@@ -188,24 +194,6 @@ export function getPhysicsParams(): Promise<GetCalibrationResponse> {
   return transport.call("get_physics_params", {});
 }
 
-export interface DiagonalTestRequest {
-  from_x: number;
-  from_y: number;
-  to_x: number;
-  to_y: number;
-  catapult_ms?: number;
-  catapult_duty?: number;
-  delay1_ms?: number;
-  catch_ms?: number;
-  catch_duty?: number;
-  delay2_ms?: number;
-  center_ms?: number;
-}
-
-export function diagonalTest(params: DiagonalTestRequest): Promise<{ success: boolean; error?: string }> {
-  return transport.call("diagonal_test", params);
-}
-
 export function tunePhysics(): Promise<GetCalibrationResponse> {
   return transport.call("tune_physics", {});
 }
@@ -216,4 +204,16 @@ export function calibrate(): Promise<CalibrateResponse> {
 
 export function getCalibration(): Promise<GetCalibrationResponse> {
   return transport.call("get_calibration", {});
+}
+
+export function diagonalTest(params: DiagonalTestRequest): Promise<DiagonalTestResponse> {
+  return transport.call("diagonal_test", params);
+}
+
+export function moveMulti(params: MoveMultiRequest): Promise<MoveResponse> {
+  return transport.call("move_multi", params);
+}
+
+export function edgeMoveTest(params: MoveMultiRequest): Promise<DiagonalTestResponse> {
+  return transport.call("edge_move_test", params);
 }
