@@ -4,7 +4,7 @@ import { type WidgetProps, btnStyle, inputStyle, labelStyle } from "./shared";
 
 const DEFAULT_PARAMS = {
   piece_mass_g: 2.7,
-  max_current_a: 1.2,
+  max_current_a: 0.4,
   mu_static: 0.55,
   mu_kinetic: 0.45,
   target_velocity_mm_s: 300,
@@ -19,6 +19,7 @@ const DEFAULT_PARAMS = {
   max_duration_ms: 5000,
   max_retry_attempts: 0,
   tick_ms: 10,
+  droop_per_piece: 0.08,
 };
 
 const PARAM_LABELS: Record<string, string> = {
@@ -37,6 +38,7 @@ const PARAM_LABELS: Record<string, string> = {
   max_duration_ms:      "timeout (ms)",
   max_retry_attempts:   "max retries",
   tick_ms:              "tick (ms)",
+  droop_per_piece:      "droop / piece",
 };
 
 const STEP_MAP: Record<string, number> = {
@@ -47,6 +49,7 @@ const STEP_MAP: Record<string, number> = {
   force_scale: 0.1,
   max_retry_attempts: 1,
   tick_ms: 1,
+  droop_per_piece: 0.01,
 };
 
 export default function PhysicsSettingsWidget({ onStatus }: WidgetProps) {

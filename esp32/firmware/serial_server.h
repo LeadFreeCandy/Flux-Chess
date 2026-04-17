@@ -101,6 +101,7 @@ inline String handleSetPhysicsParams(Board& board, const String& params) {
   if ((v = jsonGet(params, "max_duration_ms")).length())      p.max_duration_ms = v.toInt();
   if ((v = jsonGet(params, "max_retry_attempts")).length())  p.max_retry_attempts = v.toInt();
   if ((v = jsonGet(params, "tick_ms")).length())             p.tick_ms = v.toInt();
+  if ((v = jsonGet(params, "droop_per_piece")).length())     p.droop_per_piece = v.toFloat();
   board.setPhysicsParams(p);
   return board.physicsParamsToJson();
 }
@@ -161,11 +162,32 @@ inline String handleEdgeMoveTest(Board& board, const String& params) {
   return board.edgeMoveTest(up, ep);
 }
 
+inline String handleCenterPiece(Board& board, const String& params) {
+  Board::CenterPieceParams cp;
+  String v;
+  if ((v = jsonGet(params, "x")).length())          cp.x = v.toInt();
+  if ((v = jsonGet(params, "y")).length())          cp.y = v.toInt();
+  if ((v = jsonGet(params, "center1_ms")).length()) cp.center1_ms = v.toInt();
+  if ((v = jsonGet(params, "adj_ms")).length())     cp.adj_ms = v.toInt();
+  if ((v = jsonGet(params, "between_ms")).length()) cp.between_ms = v.toInt();
+  if ((v = jsonGet(params, "axis_switch_ms")).length()) cp.axis_switch_ms = v.toInt();
+  if ((v = jsonGet(params, "center2_ms")).length()) cp.center2_ms = v.toInt();
+  if ((v = jsonGet(params, "adj_repeats")).length()) cp.adj_repeats = v.toInt();
+  return board.centerPiece(cp);
+}
+
+inline String handleResetBoard(Board& board, const String&) {
+  return board.resetBoard();
+}
+
 inline String handleHexapawnPlay(Board& board, const String& params) {
   uint16_t hint_ms = 0;
+  uint16_t hint_interval_ms = 1000;
   String v = jsonGet(params, "hint_pulse_ms");
   if (v.length()) hint_ms = v.toInt();
-  return board.hexapawnPlay(hint_ms);
+  v = jsonGet(params, "hint_interval_ms");
+  if (v.length()) hint_interval_ms = v.toInt();
+  return board.hexapawnPlay(hint_ms, hint_interval_ms);
 }
 
 inline String handleTunePhysics(Board& board, const String& params) {
@@ -199,8 +221,10 @@ public:
     on("get_physics_params", handleGetPhysicsParams);
     on("tune_physics", handleTunePhysics);
     on("hexapawn_play", handleHexapawnPlay);
+    on("reset_board", handleResetBoard);
     on("diagonal_test", handleDiagonalTest);
     on("edge_move_test", handleEdgeMoveTest);
+    on("center_piece", handleCenterPiece);
     on("move_multi", handleMoveMulti);
     on("set_rgb", handleSetRGB);
     on("calibrate", handleCalibrate);

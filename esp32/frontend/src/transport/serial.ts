@@ -1,5 +1,6 @@
-import type { Transport } from "./index";
+import type { CallOptions, Transport } from "./index";
 import { emitLog } from "./index";
+import { diag } from "../diagnostics";
 
 export class SerialTransport implements Transport {
   private port: SerialPort | null = null;
@@ -86,11 +87,16 @@ export class SerialTransport implements Transport {
   }
 
   private processBuffer(): void {
-    let idx: number;
-    while ((idx = this.readBuffer.indexOf("\n")) !== -1) {
-      const line = this.readBuffer.slice(0, idx).trim();
-      this.readBuffer = this.readBuffer.slice(idx + 1);
+    // Split once instead of slicing the buffer per line (O(n²) → O(n)).
+    const parts = this.readBuffer.split("\n");
+    this.readBuffer = parts.pop() ?? "";
+    const t0 = performance.now();
+    let processed = 0;
+
+    for (const raw of parts) {
+      const line = raw.trim();
       if (!line) continue;
+      processed++;
 
       emitLog("rx", line);
 
@@ -114,15 +120,21 @@ export class SerialTransport implements Transport {
       }
     }
 
-    // Warn if buffer is growing large (possible partial data stuck)
-    if (this.readBuffer.length > 1000) {
-      console.warn(`[serial] readBuffer growing: ${this.readBuffer.length} chars, content: ${this.readBuffer.slice(0, 100)}...`);
+    const elapsed = performance.now() - t0;
+    if (elapsed > 50 || processed > 50) {
+      diag("serial/processBuffer", { lines: processed, elapsed_ms: Math.round(elapsed), bufLen: this.readBuffer.length });
+    }
+
+    if (this.readBuffer.length > 10000) {
+      console.warn(`[serial] readBuffer growing: ${this.readBuffer.length} chars`);
+      diag("serial/bufferGrowing", { len: this.readBuffer.length });
     }
   }
 
   async call<Res>(
     method: string,
-    params: Record<string, unknown>
+    params: Record<string, unknown>,
+    opts: CallOptions = {},
   ): Promise<Res> {
     if (!this.port?.writable) throw new Error("Serial port not connected");
     if (this.pending) {
@@ -140,26 +152,49 @@ export class SerialTransport implements Transport {
     this.requestCount++;
     const msg = JSON.stringify({ method, params }) + "\n";
     emitLog("tx", msg.trim());
+    diag("serial/send", { method, bufLen: this.readBuffer.length });
 
     const writer = this.port.writable.getWriter();
     await writer.write(new TextEncoder().encode(msg));
     writer.releaseLock();
 
+    const timeoutMs = opts.timeoutMs ?? 5000;
+
     return new Promise<Res>((resolve, reject) => {
+      const sentAt = Date.now();
       this.pending = {
         method,
         resolve: resolve as (v: unknown) => void,
         reject,
-        sentAt: Date.now(),
+        sentAt,
       };
-      setTimeout(() => {
-        if (this.pending?.method === method) {
-          this.timeoutCount++;
-          console.error(`[serial] TIMEOUT: "${method}" after 5s (timeouts=${this.timeoutCount}, pending bufLen=${this.readBuffer.length})`);
-          this.pending = null;
-          reject(new Error(`Serial timeout: ${method}`));
-        }
-      }, 5000);
+      if (timeoutMs > 0) {
+        setTimeout(() => {
+          // Only reject if THIS call's pending is still in place (sentAt match
+          // prevents a stale timer from rejecting a later same-method request).
+          if (this.pending?.method === method && this.pending?.sentAt === sentAt) {
+            this.timeoutCount++;
+            console.error(`[serial] TIMEOUT: "${method}" after ${timeoutMs}ms (timeouts=${this.timeoutCount}, pending bufLen=${this.readBuffer.length})`);
+            diag("serial/timeout", { method, bufLen: this.readBuffer.length });
+            this.pending = null;
+            reject(new Error(`Serial timeout: ${method}`));
+          }
+        }, timeoutMs);
+      }
     });
+  }
+
+  async send(method: string, params: Record<string, unknown>): Promise<void> {
+    if (!this.port?.writable) throw new Error("Serial port not connected");
+    const msg = JSON.stringify({ method, params }) + "\n";
+    emitLog("tx", msg.trim());
+    diag("serial/send", { method, bufLen: this.readBuffer.length, fireAndForget: true });
+
+    const writer = this.port.writable.getWriter();
+    await writer.write(new TextEncoder().encode(msg));
+    writer.releaseLock();
+    // No pending slot, no response awaited. The firmware may still write a
+    // response line when it finishes; processBuffer drops it because either
+    // `pending` is null or its method doesn't match.
   }
 }

@@ -23,7 +23,7 @@ struct PieceState {
 
 struct PhysicsParams {
   float piece_mass_g       = 2.7f;
-  float max_current_a      = 1.0f;
+  float max_current_a      = 0.4f;
   float mu_static          = 0.35f;
   float mu_kinetic         = 0.25f;
   float target_velocity_mm_s = 100.0f;
@@ -38,6 +38,15 @@ struct PhysicsParams {
   uint16_t max_duration_ms = 5000;
   uint8_t max_retry_attempts = 0;  // 0=no checkpoint recovery, >0=retry with moveDumb on failure
   uint8_t tick_ms = 10;            // physics tick period in ms (affects coil buzz frequency)
+  // Power-supply droop compensation for multi-piece moves: effective current
+  // per coil drops as more coils fire simultaneously. Modelled as
+  //   effective_I = max_current_a * (1 - droop_per_piece * (N - 1))
+  // clamped to a floor so even a full 6-coil move gets non-zero current.
+  float droop_per_piece    = 0.08f;  // 8% current loss per extra simultaneous piece
+  // Cap on pieces moving per timestep in the path planner (0 = unlimited).
+  // Limits peak power draw when routing large multi-piece moves. Counts
+  // both commanded and obstacle-routing movers.
+  uint8_t max_concurrent_moves = 0;
 };
 
 
@@ -420,7 +429,7 @@ public:
   // Each tick: decide per-move whether coil is on or off,
   // combine all active bits into one SR write, hold for tick_ms.
 
-  static constexpr int MAX_SIMULTANEOUS_MOVES = 4;
+  static constexpr int MAX_SIMULTANEOUS_MOVES = 6;
 
   // A coil group: a set of coil bits activated together (pairs for diagonal, single for orthogonal)
   static constexpr int MAX_COIL_GROUP_SIZE = 5;
@@ -462,6 +471,8 @@ public:
     MoveError error = MoveError::COIL_FAILURE;
     int coil_switches = 0;
     float max_speed = 0;
+    uint8_t duty = 255;       // PWM duty cycle (0-255)
+    float last_current = 0;   // last applied current for Fz tracking
 
     // Destination (for coast/arrival)
     float dest_x, dest_y;
@@ -577,12 +588,69 @@ public:
   }
 
   // Execute all queued moves simultaneously. Returns when all are done or timeout.
-  void executeMulti(const PhysicsParams& params) {
+  // REQUIREMENT: all queued moves must be the same distance (orthogonal only).
+  // Physics is simulated once using slot 0 as the "leader". The computed duty
+  // cycle and coil-switch timing apply identically to every slot. Each slot
+  // only contributes its own coil bits to the shared SR write.
+  void executeMulti(const PhysicsParams& params_in) {
     if (num_queued_ == 0) return;
+
+    // Validate: all moves must be orthogonal and same path length
+    int shared_path_len = slots_[0].path_len;
+    for (int i = 0; i < num_queued_; i++) {
+      if (slots_[i].diagonal || slots_[i].path_len != shared_path_len) {
+        LOG_BOARD("physics: executeMulti requires equal-distance orthogonal moves");
+        for (int j = 0; j < num_queued_; j++) slots_[j].error = MoveError::COIL_FAILURE;
+        return;
+      }
+    }
+
+    // Apply supply-droop compensation: the more coils fire simultaneously,
+    // the more the supply voltage sags and per-coil current drops. Scale
+    // max_current_a accordingly so the sim accounts for reduced available
+    // force — the controller will raise duty (or the piece simply moves
+    // slower) to compensate.
+    PhysicsParams params = params_in;
+    float droop = 1.0f - params.droop_per_piece * (float)(num_queued_ - 1);
+    if (droop < 0.15f) droop = 0.15f;  // floor: never below 15% of single-piece current
+    params.max_current_a = params_in.max_current_a * droop;
+    if (num_queued_ > 1) {
+      LOG_BOARD("physics: multi-move droop factor=%.2f (%d pieces), I_eff=%.2fA",
+                droop, num_queued_, params.max_current_a);
+    }
 
     float weight_mN = params.piece_mass_g * 9.81f;
     float mass_kg = params.piece_mass_g * 1e-3f;
-    float dt = params.tick_ms * 0.001f;
+
+    hw_.setPwmFrequency(params.pwm_freq_hz);
+
+    // Start all coils at full duty
+    {
+      uint8_t bits[MAX_SIMULTANEOUS_MOVES];
+      int n = 0;
+      for (int i = 0; i < num_queued_; i++) {
+        if (slots_[i].activeBit >= 0) bits[n++] = (uint8_t)slots_[i].activeBit;
+      }
+      if (n > 0) hw_.startCoils(bits, n, 255);
+    }
+
+    unsigned long t0 = millis();
+    unsigned long last_tick_us = micros();
+    uint8_t last_duty = 255;
+    float last_current = params.max_current_a;
+
+    // Leader state — slot 0 drives the physics sim
+    MoveSlot& leader = slots_[0];
+    PieceState& piece = *leader.piece;
+    piece.stuck = false;
+    for (int i = 1; i < num_queued_; i++) slots_[i].piece->stuck = false;
+
+    int coil_switches = 0;
+    float max_speed = 0;
+    bool coasting = false;
+    bool centered = false;
+    bool braked = false;
+    int tick_count = 0;
 
     static constexpr float COAST_TOLERANCE_MM = 3.0f;
     static constexpr float ARRIVAL_DIST_MM = 1.0f;
@@ -590,269 +658,273 @@ public:
     static constexpr float CENTERED_SPEED_MM_S = 10.0f;
     static constexpr float SPEED_CLAMP_FACTOR = 1.5f;
 
-    // Unstick all pieces
-    for (int i = 0; i < num_queued_; i++) {
-      MoveSlot& s = slots_[i];
-      if (!s.diagonal && s.activeBit < 0) { s.arrived = true; s.error = MoveError::COIL_FAILURE; continue; }
-      if (s.diagonal && s.num_groups == 0) { s.arrived = true; s.error = MoveError::COIL_FAILURE; continue; }
-      s.piece->stuck = false;
-    }
-
-    unsigned long t0 = millis();
-    int tick_count = 0;
-
-    LOG_BOARD("physics: multi-move start, %d moves, tick=%dms", num_queued_, params.tick_ms);
+    LOG_BOARD("physics: multi-move start, %d moves, path_len=%d", num_queued_, shared_path_len);
 
     while (millis() - t0 < params.max_duration_ms) {
-      // Check if all moves are done
-      bool all_done = true;
-      for (int i = 0; i < num_queued_; i++) {
-        if (slots_[i].active && !slots_[i].arrived) { all_done = false; break; }
+      // ── dt ──
+      unsigned long now_us = micros();
+      unsigned long elapsed_us = now_us - last_tick_us;
+      if (elapsed_us < 1000) {
+        while (micros() < last_tick_us + 1000) delayMicroseconds(100);
+        now_us = micros();
+        elapsed_us = now_us - last_tick_us;
       }
-      if (all_done) break;
+      float dt = elapsed_us / 1000000.0f;
+      last_tick_us = now_us;
+      if (dt > 0.005f) dt = 0.005f;
 
-      // ── Per-move tick logic ──
-      for (int i = 0; i < num_queued_; i++) {
-        MoveSlot& s = slots_[i];
-        if (!s.active || s.arrived) continue;
-        PieceState& p = *s.piece;
+      // ── Force table lookup on leader's active coil ──
+      float off_x = piece.x - leader.cx;
+      float off_y = piece.y - leader.cy;
+      float fx_1a = tableForceFx(leader.activeLayer, off_x, off_y) * params.force_scale;
+      float fy_1a = tableForceFy(leader.activeLayer, off_x, off_y) * params.force_scale;
+      float fz_1a = tableForceFz(leader.activeLayer, off_x, off_y) * params.force_scale;
 
-        float speed = sqrtf(p.vx * p.vx + p.vy * p.vy);
-        float v_along = p.vx * s.dir_x + p.vy * s.dir_y;
+      float speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
+      float v_along = (leader.moveX ? piece.vx : piece.vy) * leader.move_sign;
 
-        // Distance to destination
-        float to_dx = s.dest_x - p.x, to_dy = s.dest_y - p.y;
-        float dist_remain = sqrtf(to_dx * to_dx + to_dy * to_dy);
+      // ── Dynamic friction ──
+      float normal_mN = weight_mN - fz_1a * last_current;
+      if (normal_mN < 0) normal_mN = 0;
+      float mu = (piece.stuck || speed < 0.1f) ? params.mu_static : params.mu_kinetic;
+      float friction_mN = mu * normal_mN;
 
-        // Coast check
-        if (!s.coasting) {
-          float coast_mu = params.mu_kinetic + params.coast_friction_offset;
-          float friction_decel = coast_mu * weight_mN / mass_kg;
-          float stopping_dist = (friction_decel > 0.01f) ? (v_along * v_along) / (2.0f * friction_decel) : 9999.0f;
-          if (v_along > 0 && dist_remain > 0 && stopping_dist >= dist_remain) {
-            s.coasting = true;
-            s.coil_on = false;
-            LOG_BOARD("physics: move %d coast v=%.1f stop=%.1f remain=%.1f", i, v_along, stopping_dist, dist_remain);
-          }
+      // ── Static friction check ──
+      if (piece.stuck) {
+        float avail = sqrtf(fx_1a * fx_1a + fy_1a * fy_1a) * params.max_current_a;
+        float static_fric = params.mu_static * (weight_mN - fz_1a * params.max_current_a);
+        if (avail > fmaxf(static_fric, 0)) {
+          piece.stuck = false;
+          last_tick_us = micros();
+          LOG_BOARD("physics: multi unstuck (F=%.1f > fric=%.1f mN)", avail, static_fric);
+        } else {
+          continue;
         }
+      }
 
-        float fx = 0, fy = 0;
-        float normal_mN = weight_mN;
+      float fx, fy;
+      uint8_t duty;
 
-        if (s.coasting) {
-          s.coil_on = false;
-          // Centering pulse
-          if (!s.centered && params.brake_pulse_ms > 0 &&
-              (dist_remain < COAST_TOLERANCE_MM || speed < 0.5f) && speed < 20.0f) {
+      if (!coasting) {
+        // ── Coast check ──
+        float dest_x = leader.path_mm[shared_path_len-1][0];
+        float dest_y = leader.path_mm[shared_path_len-1][1];
+        float dist_remain = leader.moveX
+          ? (dest_x - piece.x) * leader.move_sign
+          : (dest_y - piece.y) * leader.move_sign;
+
+        float coast_mu = params.mu_kinetic + params.coast_friction_offset;
+        float friction_decel = (weight_mN > 0) ? coast_mu * weight_mN / mass_kg : 0;
+        float stopping_dist = (friction_decel > 0.01f) ? (v_along * v_along) / (2.0f * friction_decel) : 9999.0f;
+
+        if (v_along > 0 && dist_remain > 0 && stopping_dist >= dist_remain) {
+          coasting = true;
+          hw_.stopAllCoils();
+          last_current = 0;
+          LOG_BOARD("physics: multi coast v=%.1f stop=%.1f remain=%.1f", v_along, stopping_dist, dist_remain);
+        }
+      }
+
+      if (coasting) {
+        fx = 0; fy = 0; duty = 0;
+
+        // Centering pulse on all destination coils
+        float dest_x = leader.path_mm[shared_path_len-1][0];
+        float dest_y = leader.path_mm[shared_path_len-1][1];
+        float d_dest = sqrtf((piece.x-dest_x)*(piece.x-dest_x) + (piece.y-dest_y)*(piece.y-dest_y));
+
+        if (!centered && params.brake_pulse_ms > 0 && speed < 20.0f
+            && (d_dest < COAST_TOLERANCE_MM || speed < 0.5f)) {
+          for (int i = 0; i < num_queued_; i++) {
+            MoveSlot& s = slots_[i];
             int8_t destBit = coordToBit((uint8_t)(s.dest_x / GRID_TO_MM + 0.5f),
                                         (uint8_t)(s.dest_y / GRID_TO_MM + 0.5f));
-            if (destBit >= 0) {
-              hw_.pulseBit((uint8_t)destBit, params.brake_pulse_ms, 255);
-              s.centered = true;
-              LOG_BOARD("physics: move %d center pulse %dms", i, params.brake_pulse_ms);
-            }
+            if (destBit >= 0) hw_.pulseBit((uint8_t)destBit, params.brake_pulse_ms, 255);
           }
-        } else if (s.diagonal) {
-          // ── Diagonal: compute combined force from current group's coils ──
-          s.coil_on = (v_along < params.target_velocity_mm_s);
-          if (s.coil_on && s.group_idx < s.num_groups) {
-            const CoilGroup& g = s.groups[s.group_idx];
-            for (int c = 0; c < g.count; c++) {
-              float coff_x = p.x - (float)((g.bits[c] / 8 / SR_ROWS) * SR_BLOCK) * GRID_TO_MM;
-              float coff_y = p.y - (float)((g.bits[c] / 8 % SR_ROWS) * SR_BLOCK) * GRID_TO_MM;
-              // Reconstruct coil position from bit index
-              uint8_t sr_idx = g.bits[c] / 8;
-              uint8_t local_bit = g.bits[c] % 8;
-              uint8_t sr_col = sr_idx / SR_ROWS;
-              uint8_t sr_row = sr_idx % SR_ROWS;
-              float coil_x, coil_y;
-              if (local_bit <= 2) { coil_x = (sr_col * SR_BLOCK + (2 - local_bit)) * GRID_TO_MM; coil_y = sr_row * SR_BLOCK * GRID_TO_MM; }
-              else { coil_x = sr_col * SR_BLOCK * GRID_TO_MM; coil_y = (sr_row * SR_BLOCK + (local_bit - 2)) * GRID_TO_MM; }
-
-              float dx = p.x - coil_x, dy = p.y - coil_y;
-              fx += tableForceFx(0, dx, dy) * params.force_scale * params.max_current_a;
-              fy += tableForceFy(0, dx, dy) * params.force_scale * params.max_current_a;
-              float fz = tableForceFz(0, dx, dy) * params.force_scale * params.max_current_a;
-              normal_mN = fmaxf(normal_mN - fz, normal_mN); // Fz adds to normal
-            }
-          }
-
-          // Group switching: compare current vs next group net forward accel
-          if (!s.coasting && s.group_idx < s.num_groups - 1) {
-            float cur_fwd = (fx * s.dir_x + fy * s.dir_y);
-            float cur_fric = params.mu_kinetic * normal_mN;
-            float cur_net = cur_fwd - cur_fric;
-
-            // Compute next group force
-            float nfx = 0, nfy = 0, n_normal = weight_mN;
-            const CoilGroup& ng = s.groups[s.group_idx + 1];
-            for (int c = 0; c < ng.count; c++) {
-              uint8_t sr_idx = ng.bits[c] / 8;
-              uint8_t local_bit = ng.bits[c] % 8;
-              uint8_t sr_col = sr_idx / SR_ROWS;
-              uint8_t sr_row = sr_idx % SR_ROWS;
-              float coil_x, coil_y;
-              if (local_bit <= 2) { coil_x = (sr_col * SR_BLOCK + (2 - local_bit)) * GRID_TO_MM; coil_y = sr_row * SR_BLOCK * GRID_TO_MM; }
-              else { coil_x = sr_col * SR_BLOCK * GRID_TO_MM; coil_y = (sr_row * SR_BLOCK + (local_bit - 2)) * GRID_TO_MM; }
-
-              float dx = p.x - coil_x, dy = p.y - coil_y;
-              nfx += tableForceFx(0, dx, dy) * params.force_scale * params.max_current_a;
-              nfy += tableForceFy(0, dx, dy) * params.force_scale * params.max_current_a;
-              float fz = tableForceFz(0, dx, dy) * params.force_scale * params.max_current_a;
-              n_normal = fmaxf(n_normal - fz, n_normal);
-            }
-            float next_fwd = nfx * s.dir_x + nfy * s.dir_y;
-            float next_net = next_fwd - params.mu_kinetic * n_normal;
-
-            if (next_net > cur_net) {
-              s.group_idx++;
-              s.coil_switches++;
-              LOG_BOARD("physics: move %d switch to group %d", i, s.group_idx);
-            }
-          }
-        } else {
-          // ── Orthogonal: single coil ──
-          float off_x = p.x - s.cx, off_y = p.y - s.cy;
-          float fx_1a = tableForceFx(s.activeLayer, off_x, off_y) * params.force_scale;
-          float fy_1a = tableForceFy(s.activeLayer, off_x, off_y) * params.force_scale;
-          float fz_1a = tableForceFz(s.activeLayer, off_x, off_y) * params.force_scale;
-
-          s.coil_on = (v_along < params.target_velocity_mm_s);
-          if (s.coil_on) {
-            normal_mN = fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
-            fx = fx_1a * params.max_current_a;
-            fy = fy_1a * params.max_current_a;
-          }
-
-          // Coil switching (net-accel comparison)
-          if (!s.coasting && s.coil_idx < s.path_len - 1) {
-            float cur_fx_move = s.moveX ? fx_1a : fy_1a;
-            float cur_fwd = cur_fx_move * s.move_sign * params.max_current_a;
-            float cur_norm = fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
-            float cur_net = cur_fwd - params.mu_kinetic * cur_norm;
-
-            float next_cx = s.path_mm[s.coil_idx + 1][0];
-            float next_cy = s.path_mm[s.coil_idx + 1][1];
-            float n_off_x = p.x - next_cx, n_off_y = p.y - next_cy;
-            float nfx = tableForceFx(0, n_off_x, n_off_y) * params.force_scale;
-            float nfy = tableForceFy(0, n_off_x, n_off_y) * params.force_scale;
-            float nfz = tableForceFz(0, n_off_x, n_off_y) * params.force_scale;
-            float next_fx_move = s.moveX ? nfx : nfy;
-            float next_fwd = next_fx_move * s.move_sign * params.max_current_a;
-            float next_norm = fmaxf(weight_mN - nfz * params.max_current_a, 0.0f);
-            float next_net = next_fwd - params.mu_kinetic * next_norm;
-
-            if (next_net > cur_net) {
-              s.coil_idx++;
-              s.cx = next_cx; s.cy = next_cy;
-              s.activeBit = coordToBit((uint8_t)(s.cx / GRID_TO_MM + 0.5f),
-                                        (uint8_t)(s.cy / GRID_TO_MM + 0.5f));
-              s.activeLayer = 0;
-              s.coil_switches++;
-            }
-          }
+          centered = true;
+          braked = true;
+          LOG_BOARD("physics: multi centering pulse %dms", params.brake_pulse_ms);
         }
+      } else {
+        // ── Controller: desired force → current → duty ──
+        float speed_error = params.target_velocity_mm_s - v_along;
+        float desired_accel = fminf(fmaxf(speed_error / dt, -params.target_accel_mm_s2), params.target_accel_mm_s2);
+        float desired_force = mass_kg * desired_accel + friction_mN;
+        if (desired_force < 0) desired_force = 0;
 
-        // Friction
-        float mu_fric = s.coasting ? (params.mu_kinetic + params.coast_friction_offset) : params.mu_kinetic;
-        if (speed > 0.1f) {
-          float fric = mu_fric * fmaxf(normal_mN, 0);
-          float max_fric = speed / dt * mass_kg;
-          if (fric > max_fric) fric = max_fric;
-          fx -= fric * (p.vx / speed);
-          fy -= fric * (p.vy / speed);
+        float avail_lateral = sqrtf(fx_1a * fx_1a + fy_1a * fy_1a);
+        float required_current = (avail_lateral > 0.01f) ? desired_force / avail_lateral : params.max_current_a;
+        required_current = fminf(required_current, params.max_current_a);
+        if (required_current < 0) required_current = 0;
+
+        float desired_eff_duty = required_current / params.max_current_a * 255.0f;
+        float comp = params.pwm_compensation;
+        float raw_duty = (comp < 0.99f) ? (desired_eff_duty - 255.0f * comp) / (1.0f - comp) : 0;
+        if (raw_duty < 0) raw_duty = 0;
+        if (raw_duty > 255) raw_duty = 255;
+        duty = (uint8_t)raw_duty;
+        if (duty == 0 && desired_accel > 0 && desired_force > 0) duty = 1;
+        float eff_duty = (duty > 0) ? duty + (255.0f - duty) * comp : 0;
+        float actual_current = (eff_duty / 255.0f) * params.max_current_a;
+        last_current = actual_current;
+
+        fx = fx_1a * actual_current;
+        fy = fy_1a * actual_current;
+      }
+
+      // ── Friction ──
+      if (speed > 0.1f) {
+        float mu_fric = coasting ? (params.mu_kinetic + params.coast_friction_offset) : params.mu_kinetic;
+        float fric = mu_fric * fmaxf(normal_mN, 0);
+        float max_fric = speed / dt * mass_kg;
+        if (fric > max_fric) fric = max_fric;
+        fx -= fric * (piece.vx / speed);
+        fy -= fric * (piece.vy / speed);
+      }
+
+      // ── Integrate ──
+      float ax = fx / mass_kg;
+      float ay = fy / mass_kg;
+      if (!coasting) {
+        float accel_mag = sqrtf(ax * ax + ay * ay);
+        if (accel_mag > params.target_accel_mm_s2 * 3.0f) {
+          float scale = params.target_accel_mm_s2 * 3.0f / accel_mag;
+          ax *= scale; ay *= scale;
         }
+      }
+      piece.vx += ax * dt;
+      piece.vy += ay * dt;
 
-        // Integrate
-        float ax = fx / mass_kg, ay = fy / mass_kg;
-        if (!s.coasting) {
-          float amag = sqrtf(ax * ax + ay * ay);
-          if (amag > params.target_accel_mm_s2 * 3.0f) {
-            float sc = params.target_accel_mm_s2 * 3.0f / amag;
-            ax *= sc; ay *= sc;
+      speed = sqrtf(piece.vx * piece.vx + piece.vy * piece.vy);
+      if (speed > params.target_velocity_mm_s * SPEED_CLAMP_FACTOR) {
+        float scale = params.target_velocity_mm_s * SPEED_CLAMP_FACTOR / speed;
+        piece.vx *= scale; piece.vy *= scale;
+      }
+      if (speed > max_speed) max_speed = speed;
+
+      piece.x += piece.vx * dt;
+      piece.y += piece.vy * dt;
+
+      // ── Coil switching — shared across all slots ──
+      if (!coasting && leader.coil_idx < shared_path_len - 1) {
+        float next_cx = leader.path_mm[leader.coil_idx + 1][0];
+        float next_cy = leader.path_mm[leader.coil_idx + 1][1];
+        float next_off_x = piece.x - next_cx;
+        float next_off_y = piece.y - next_cy;
+
+        int nextLayer = params.all_coils_equal ? 0 : bitToLayer(
+          coordToBit((uint8_t)(next_cx / GRID_TO_MM + 0.5f), (uint8_t)(next_cy / GRID_TO_MM + 0.5f)));
+
+        float cur_fx_move = leader.moveX ? fx_1a : fy_1a;
+        float cur_forward = cur_fx_move * leader.move_sign * params.max_current_a;
+        float cur_normal = fmaxf(weight_mN - fz_1a * params.max_current_a, 0.0f);
+        float cur_net = cur_forward - params.mu_kinetic * cur_normal;
+
+        float nfx_1a = tableForceFx(nextLayer, next_off_x, next_off_y) * params.force_scale;
+        float nfy_1a = tableForceFy(nextLayer, next_off_x, next_off_y) * params.force_scale;
+        float nfz_1a = tableForceFz(nextLayer, next_off_x, next_off_y) * params.force_scale;
+        float next_fx_move = leader.moveX ? nfx_1a : nfy_1a;
+        float next_forward = next_fx_move * leader.move_sign * params.max_current_a;
+        float next_normal = fmaxf(weight_mN - nfz_1a * params.max_current_a, 0.0f);
+        float next_net = next_forward - params.mu_kinetic * next_normal;
+
+        if (next_net > cur_net) {
+          // Advance coil index on all slots
+          leader.coil_idx++;
+          leader.cx = next_cx;
+          leader.cy = next_cy;
+          leader.activeLayer = params.all_coils_equal ? 0 : bitToLayer(
+            coordToBit((uint8_t)(leader.cx / GRID_TO_MM + 0.5f), (uint8_t)(leader.cy / GRID_TO_MM + 0.5f)));
+
+          for (int i = 0; i < num_queued_; i++) {
+            MoveSlot& s = slots_[i];
+            s.coil_idx = leader.coil_idx;
+            s.cx = s.path_mm[s.coil_idx][0];
+            s.cy = s.path_mm[s.coil_idx][1];
+            s.activeBit = coordToBit((uint8_t)(s.cx / GRID_TO_MM + 0.5f),
+                                      (uint8_t)(s.cy / GRID_TO_MM + 0.5f));
+            s.activeLayer = params.all_coils_equal ? 0 : bitToLayer(s.activeBit);
           }
+          coil_switches++;
+
+          // Write new coil bits immediately
+          uint8_t bits[MAX_SIMULTANEOUS_MOVES];
+          int n = 0;
+          for (int i = 0; i < num_queued_; i++) {
+            if (slots_[i].activeBit >= 0) bits[n++] = (uint8_t)slots_[i].activeBit;
+          }
+          if (n > 0) hw_.startCoils(bits, n, 255);
+          last_duty = 255;
+          last_current = params.max_current_a;
+
+          LOG_BOARD("physics: multi switch coil idx=%d/%d", leader.coil_idx, shared_path_len);
         }
-        p.vx += ax * dt;
-        p.vy += ay * dt;
+      }
 
-        speed = sqrtf(p.vx * p.vx + p.vy * p.vy);
-        if (speed > params.target_velocity_mm_s * SPEED_CLAMP_FACTOR) {
-          float sc = params.target_velocity_mm_s * SPEED_CLAMP_FACTOR / speed;
-          p.vx *= sc; p.vy *= sc;
+      // ── PWM update ──
+      if (!coasting && abs((int)duty - (int)last_duty) > 2) {
+        // Update PWM on the first active coil (shared PWM line)
+        if (leader.activeBit >= 0) {
+          hw_.sustainCoil((uint8_t)leader.activeBit, 0, duty);
+          last_duty = duty;
         }
-        if (speed > s.max_speed) s.max_speed = speed;
+      }
 
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
+      // ── Arrival check ──
+      {
+        float dest_x = leader.path_mm[shared_path_len-1][0];
+        float dest_y = leader.path_mm[shared_path_len-1][1];
+        float d_dest = sqrtf((piece.x-dest_x)*(piece.x-dest_x) + (piece.y-dest_y)*(piece.y-dest_y));
 
-        // Arrival check
-        float d_dest = sqrtf((p.x-s.dest_x)*(p.x-s.dest_x) + (p.y-s.dest_y)*(p.y-s.dest_y));
-        bool arrived = (s.centered && speed < CENTERED_SPEED_MM_S) ||
+        bool arrived = (centered && speed < CENTERED_SPEED_MM_S) ||
                        (d_dest < ARRIVAL_DIST_MM && speed < ARRIVAL_SPEED_MM_S);
         if (arrived) {
-          p.x = s.dest_x; p.y = s.dest_y;
-          p.vx = 0; p.vy = 0;
-          p.stuck = true;
-          s.arrived = true;
-          s.error = MoveError::NONE;
-          s.coil_on = false;
-          unsigned long t = millis() - t0;
-          LOG_BOARD("physics: move %d ARRIVED t=%lums max_v=%.0f switches=%d",
-                    i, t, s.max_speed, s.coil_switches);
-        }
-      }
-
-      // ── Combine all active coil bits into one SR write ──
-      uint8_t active_bits[MAX_SIMULTANEOUS_MOVES * MAX_COIL_GROUP_SIZE];
-      int n_active = 0;
-      for (int i = 0; i < num_queued_; i++) {
-        const MoveSlot& s = slots_[i];
-        if (!s.active || s.arrived || !s.coil_on) continue;
-        if (s.diagonal) {
-          // Add all bits from current coil group
-          if (s.group_idx < s.num_groups) {
-            const CoilGroup& g = s.groups[s.group_idx];
-            for (int c = 0; c < g.count && n_active < (int)sizeof(active_bits); c++) {
-              active_bits[n_active++] = (uint8_t)g.bits[c];
-            }
+          // Snap all pieces to their destinations
+          for (int i = 0; i < num_queued_; i++) {
+            MoveSlot& s = slots_[i];
+            s.piece->x = s.dest_x;
+            s.piece->y = s.dest_y;
+            s.piece->vx = 0;
+            s.piece->vy = 0;
+            s.piece->stuck = true;
+            s.arrived = true;
+            s.error = MoveError::NONE;
           }
-        } else {
-          if (s.activeBit >= 0) active_bits[n_active++] = (uint8_t)s.activeBit;
+
+          if (!coasting) hw_.stopAllCoils();
+
+          unsigned long total_ms = millis() - t0;
+          float dist_total = sqrtf(leader.dx * leader.dx + leader.dy * leader.dy);
+          float avg_speed = (total_ms > 0) ? dist_total / (total_ms / 1000.0f) : 0;
+          LOG_BOARD("physics: === MULTI MOVE COMPLETE ===");
+          LOG_BOARD("physics: time=%lums dist=%.1fmm avg=%.0fmm/s max=%.0fmm/s switches=%d braked=%d",
+                    total_ms, dist_total, avg_speed, max_speed, coil_switches, braked ? 1 : 0);
+          return;
         }
       }
 
-      if (n_active > 0) {
-        hw_.startCoils(active_bits, n_active, 255);
-      } else {
-        hw_.stopAllCoils();
+      // Sustain between ticks
+      if (!coasting && leader.activeBit >= 0) {
+        hw_.sustainCoil((uint8_t)leader.activeBit, 0, last_duty);
       }
-
-      // Hold for tick duration
-      delay(params.tick_ms);
 
       // Log every 10 ticks
       tick_count++;
       if (tick_count % 10 == 0) {
         unsigned long elapsed = millis() - t0;
-        for (int i = 0; i < num_queued_; i++) {
-          MoveSlot& s = slots_[i];
-          if (!s.active || s.arrived) continue;
-          LOG_BOARD("physics: t=%lums m%d pos=(%.1f,%.1f) v=(%.1f,%.1f) %s%s",
-                    elapsed, i, s.piece->x, s.piece->y, s.piece->vx, s.piece->vy,
-                    s.coil_on ? "ON" : "off", s.coasting ? " COAST" : "");
-        }
+        LOG_BOARD("physics: t=%lums pos=(%.1f,%.1f) v=(%.1f,%.1f) duty=%d %s",
+                  elapsed, piece.x, piece.y, piece.vx, piece.vy, last_duty,
+                  coasting ? (braked ? "BRAKE" : "COAST") : "");
       }
     }
 
-    // Cleanup: stop all coils
+    // Timeout
     hw_.stopAllCoils();
-
-    // Report any moves that didn't arrive
     for (int i = 0; i < num_queued_; i++) {
       if (slots_[i].active && !slots_[i].arrived) {
-        LOG_BOARD("physics: move %d TIMEOUT pos=(%.1f,%.1f) v=(%.1f,%.1f)",
-                  i, slots_[i].piece->x, slots_[i].piece->y,
-                  slots_[i].piece->vx, slots_[i].piece->vy);
+        slots_[i].error = MoveError::COIL_FAILURE;
+        LOG_BOARD("physics: move %d TIMEOUT pos=(%.1f,%.1f)",
+                  i, slots_[i].piece->x, slots_[i].piece->y);
       }
     }
   }

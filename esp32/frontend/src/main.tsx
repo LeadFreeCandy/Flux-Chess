@@ -1,8 +1,11 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { initTransport, needsUserGesture } from "./transport";
+import { installDiagnostics } from "./diagnostics";
 import App from "./App";
 import TestSurface from "./TestSurface";
+
+installDiagnostics();
 
 const root = createRoot(document.getElementById("root")!);
 

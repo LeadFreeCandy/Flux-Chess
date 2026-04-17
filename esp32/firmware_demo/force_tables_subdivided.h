@@ -1,0 +1,1 @@
+/Users/samir/Documents/projects/fluxchess/esp32/firmware/force_tables_subdivided.h

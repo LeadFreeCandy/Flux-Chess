@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { movePhysics, setPiece } from "../generated/api";
+import { movePhysics, setPiece, setPhysicsParams as apiSetParams } from "../generated/api";
 import { onSerialLog, type SerialLogEntry } from "../transport";
 import { type WidgetProps, btnStyle } from "./shared";
 
@@ -29,7 +29,8 @@ type Params = {
   target_velocity_mm_s: number;
   target_accel_mm_s2: number;
   max_jerk_mm_s3: number;
-  active_brake: boolean;
+  coast_friction_offset: number;
+  brake_pulse_ms: number;
   pwm_freq_hz: number;
   pwm_compensation: number;
   all_coils_equal: boolean;
@@ -45,7 +46,8 @@ const INITIAL_PARAMS: Params = {
   target_velocity_mm_s: 50,
   target_accel_mm_s2: 300,
   max_jerk_mm_s3: 50000,
-  active_brake: true,
+  coast_friction_offset: 0,
+  brake_pulse_ms: 100,
   pwm_freq_hz: 20000,
   pwm_compensation: 0.2,
   all_coils_equal: false,
@@ -90,7 +92,7 @@ function adjustParams(params: Params, outcome: Outcome): Params {
     case "overshoot":
       // Too fast / not enough braking
       p.target_velocity_mm_s = Math.max(p.target_velocity_mm_s * 0.7, 20);
-      p.active_brake = true;
+      p.brake_pulse_ms = 100;
       p.mu_kinetic = Math.min(p.mu_kinetic * 1.2, 1.0);
       break;
 
@@ -185,8 +187,11 @@ export default function TuneWidget({ onStatus }: WidgetProps) {
       setStep("moving");
       onStatus(`Trial ${iter + 1}: moving (${from_x},${y}) -> (${to_x},${y})...`);
 
+      // Push trial params to ESP32 before move
+      await apiSetParams(trialParams as any).catch(() => {});
+
       await withTimeout(
-        movePhysics({ from_x, from_y: y, to_x, to_y: y, ...trialParams }),
+        movePhysics({ from_x, from_y: y, to_x, to_y: y }),
         (trialParams.max_duration_ms || 5000) + 3000,
         "movePhysics"
       );
@@ -233,9 +238,13 @@ export default function TuneWidget({ onStatus }: WidgetProps) {
     runTrial(newParams, nextIter);
   };
 
-  const applyParams = () => {
-    localStorage.setItem("fluxchess_physics_params", JSON.stringify(params));
-    onStatus("Parameters saved — enable Physics in Hexapawn widget");
+  const applyParams = async () => {
+    try {
+      await apiSetParams(params as any);
+      onStatus("Parameters saved to ESP32");
+    } catch (e) {
+      onStatus(`Failed to save: ${e}`);
+    }
   };
 
   const paramDiff = (prev: Params, next: Params): string[] => {
@@ -309,7 +318,7 @@ export default function TuneWidget({ onStatus }: WidgetProps) {
           {/* Show current params */}
           <div style={{ marginTop: 8, fontSize: 10, color: "#666", fontFamily: "monospace" }}>
             I={params.max_current_a}A v={params.target_velocity_mm_s}mm/s a={params.target_accel_mm_s2}mm/s²
-            μs={params.mu_static} μk={params.mu_kinetic} brake={params.active_brake ? "on" : "off"}
+            μs={params.mu_static} μk={params.mu_kinetic} brake={params.brake_pulse_ms}ms
           </div>
 
           {/* Show last few logs */}

@@ -1,6 +1,8 @@
-import { useState, useEffect } from "react";
-import { getBoardState, moveDumb, movePhysics, type GetBoardStateResponse } from "../generated/api";
-import { type WidgetProps, btnStyle, inputStyle, labelStyle } from "./shared";
+import { useState, useRef } from "react";
+import { getBoardState } from "../generated/api";
+import { transport } from "../transport/index";
+import { onSerialLog, type SerialLogEntry } from "../transport";
+import { type WidgetProps, btnStyle } from "./shared";
 
 const PIECE_NONE = 0;
 const PIECE_WHITE = 1;
@@ -11,199 +13,126 @@ const MAJOR_ROWS = [0, 3, 6];
 const GRAVE_COL = 9;
 const ALL_COLS = [...MAJOR_COLS, GRAVE_COL];
 
-type Pos = { x: number; y: number };
+type Step = "idle" | "playing" | "done";
 
-const DEFAULT_PHYSICS_PARAMS = {
-  piece_mass_g: 4.3,
-  max_current_a: 1.0,
-  mu_static: 0.35,
-  mu_kinetic: 0.25,
-  target_velocity_mm_s: 100,
-  target_accel_mm_s2: 500,
-  max_jerk_mm_s3: 50000,
-  active_brake: true,
-  pwm_freq_hz: 20000,
-  pwm_compensation: 0.2,
-  all_coils_equal: false,
-  force_scale: 1.0,
-  max_duration_ms: 5000,
-};
-
-const PARAM_INFO: Record<keyof typeof DEFAULT_PHYSICS_PARAMS, string> = {
-  piece_mass_g:          "mass (g)",
-  max_current_a:         "max current (A)",
-  mu_static:             "static mu",
-  mu_kinetic:            "kinetic mu",
-  target_velocity_mm_s:  "target v (mm/s)",
-  target_accel_mm_s2:    "target a (mm/s\u00B2)",
-  max_jerk_mm_s3:        "max jerk (mm/s\u00B3)",
-  pwm_freq_hz:           "PWM freq (Hz)",
-  pwm_compensation:      "PWM comp (0-1)",
-  force_scale:           "force scale",
-  max_duration_ms:       "timeout (ms)",
-};
-
-function defaultPieces(): number[][] {
-  const grid: number[][] = Array.from({ length: 10 }, () => Array(7).fill(PIECE_NONE));
-  grid[0][0] = PIECE_WHITE; grid[3][0] = PIECE_WHITE; grid[6][0] = PIECE_WHITE;
-  grid[0][6] = PIECE_BLACK; grid[3][6] = PIECE_BLACK; grid[6][6] = PIECE_BLACK;
-  return grid;
-}
+const DEFAULT_HINT_PULSE_MS = 50;
+const DEFAULT_HINT_INTERVAL_MS = 1000;
 
 export default function HexapawnWidget({ onStatus }: WidgetProps) {
-  const [boardState, setBoardState] = useState<GetBoardStateResponse | null>(null);
-  const [selected, setSelected] = useState<Pos | null>(null);
-  const [isMoving, setIsMoving] = useState(false);
-  const [usePhysics, setUsePhysics] = useState(false);
-  const [showParams, setShowParams] = useState(false);
-  const [physicsParams, setPhysicsParamsRaw] = useState(() => {
-    try {
-      const saved = localStorage.getItem('fluxchess_physics_params');
-      if (saved) return { ...DEFAULT_PHYSICS_PARAMS, ...JSON.parse(saved) };
-    } catch {}
-    return DEFAULT_PHYSICS_PARAMS;
-  });
+  const [step, setStep] = useState<Step>("idle");
+  const [logs, setLogs] = useState<string[]>([]);
+  const [result, setResult] = useState<string | null>(null);
+  const [hintPulseMs, setHintPulseMs] = useState(DEFAULT_HINT_PULSE_MS);
+  const [hintIntervalMs, setHintIntervalMs] = useState(DEFAULT_HINT_INTERVAL_MS);
+  const [pieces, setPieces] = useState<number[][] | null>(null);
+  const logsRef = useRef<string[]>([]);
+  const logBoxRef = useRef<HTMLDivElement>(null);
 
-  const setPhysicsParams = (val: typeof DEFAULT_PHYSICS_PARAMS | ((prev: typeof DEFAULT_PHYSICS_PARAMS) => typeof DEFAULT_PHYSICS_PARAMS)) => {
-    setPhysicsParamsRaw((prev: typeof DEFAULT_PHYSICS_PARAMS) => {
-      const next = typeof val === "function" ? val(prev) : val;
-      localStorage.setItem('fluxchess_physics_params', JSON.stringify(next));
-      return next;
-    });
-  };
-  const [simPos, setSimPos] = useState<{ x: number; y: number } | null>(null);
-
-  // Listen for simulated position updates from MoveTestWidget
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      setSimPos(detail ? { x: detail.x, y: detail.y } : null);
-    };
-    window.addEventListener("fluxchess-sim-pos", handler);
-    return () => window.removeEventListener("fluxchess-sim-pos", handler);
-  }, []);
-
+  const [resetting, setResetting] = useState(false);
 
   const fetchBoard = async () => {
     try {
       const res = await getBoardState();
-      setBoardState(res);
-    } catch {
-      if (!boardState) {
-        setBoardState({ raw_strengths: [], pieces: defaultPieces() });
-      }
-    }
+      setPieces(res.pieces);
+    } catch {}
   };
 
-  useEffect(() => { fetchBoard(); }, []);
-
-  const pieces = boardState?.pieces;
+  const resetBoardPhysical = async () => {
+    if (resetting) return;
+    setResetting(true);
+    onStatus("Resetting board...");
+    try {
+      const res = await transport.call("reset_board", {}, { timeoutMs: 180000 }) as {
+        success: boolean; moves?: number; error?: string;
+      };
+      if (res.success) {
+        onStatus(res.moves === 0 ? "Board already reset" : `Board reset (${res.moves} moves)`);
+      } else {
+        onStatus(`Reset failed: ${res.error ?? "unknown"}`);
+      }
+    } catch (e) {
+      onStatus(`Reset error: ${e}`);
+    }
+    await fetchBoard();
+    setResetting(false);
+  };
 
   const getPiece = (x: number, y: number): number => {
     if (!pieces || x >= pieces.length || y >= pieces[0].length) return PIECE_NONE;
     return pieces[x][y];
   };
 
-  const handleClick = async (x: number, y: number) => {
-    if (isMoving || !pieces) return;
+  const startGame = async () => {
+    setStep("playing");
+    setResult(null);
+    logsRef.current = [];
+    setLogs([]);
+    onStatus("Game starting...");
 
-    if (selected) {
-      if (selected.x === x && selected.y === y) {
-        setSelected(null);
-        return;
-      }
+    // hexapawn_play is a long-running command (can run for minutes). We send
+    // it fire-and-forget so it does NOT occupy the transport's pending slot —
+    // that lets other short commands (get_board_state, etc.) continue to work
+    // during the game. Game completion is detected from LOG_BOARD messages.
 
-      setIsMoving(true);
-      const mode = usePhysics ? "physics" : "dumb";
-      onStatus(`Moving ${mode} (${selected.x},${selected.y}) → (${x},${y})...`);
+    let finished = false;
+    const finish = (resultText: string, statusText: string) => {
+      if (finished) return;
+      finished = true;
+      setResult(resultText);
+      onStatus(statusText);
+      unsub();
+      fetchBoard().finally(() => setStep("done"));
+    };
 
+    const unsub = onSerialLog((entry: SerialLogEntry) => {
+      if (entry.dir !== "rx") return;
       try {
-        const moveParams = { from_x: selected.x, from_y: selected.y, to_x: x, to_y: y };
-        const res = usePhysics
-          ? await movePhysics({ ...moveParams, ...physicsParams })
-          : await moveDumb(moveParams);
-        if (res.success) {
-          onStatus(`Moved to (${x},${y})`);
-        } else {
-          onStatus(`Move failed: ${res.error}`);
+        const msg = JSON.parse(entry.data);
+        if (msg.type !== "log" || typeof msg.msg !== "string") return;
+        const line = msg.msg;
+        if (!line.startsWith("hexapawn:")) return;
+
+        logsRef.current = [...logsRef.current, line];
+        setLogs([...logsRef.current]);
+        if (logBoxRef.current) {
+          logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
         }
-      } catch (e) {
-        onStatus(`Error: ${e}`);
-      }
 
-      await fetchBoard();
-      setSelected(null);
-      setIsMoving(false);
-      return;
+        // Status updates from key log lines
+        if (line.includes("your turn")) onStatus("Your turn — lift a white piece");
+        else if (line.includes("AI thinking")) onStatus("AI thinking...");
+        else if (line.includes("piece lifted")) onStatus("Piece lifted — place on valid square");
+        else if (line.includes("piece placed")) onStatus("Piece placed");
+
+        // Terminal states — end the game locally
+        if (line.includes("WINS")) {
+          const winner = line.includes("White") ? "white" : "black";
+          finish(winner === "white" ? "You win!" : "AI wins!",
+                 winner === "white" ? "You win!" : "AI wins!");
+        } else if (line.includes("ERROR")) {
+          finish(`Error: ${line.replace("hexapawn: ", "")}`, "Game error");
+        } else if (line.includes("timeout waiting")) {
+          finish("Timeout", "Game timed out");
+        } else if (line.includes("already running")) {
+          finish("Already running on device", "Game already running");
+        }
+      } catch {}
+    });
+
+    try {
+      await transport.send("hexapawn_play", {
+        hint_pulse_ms: hintPulseMs,
+        hint_interval_ms: hintIntervalMs,
+      });
+    } catch (e) {
+      finish(`Error: ${e}`, `Game error: ${e}`);
     }
-
-    if (getPiece(x, y) !== PIECE_NONE) {
-      setSelected({ x, y });
-    }
-  };
-
-  const updateParam = (key: keyof typeof physicsParams, val: string) => {
-    setPhysicsParams(p => ({ ...p, [key]: parseFloat(val) || 0 }));
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", alignItems: "center" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", alignItems: "center", gap: 8 }}>
 
-      <div style={{ display: "flex", justifyContent: "space-between", width: "100%", maxWidth: 400, marginBottom: 8, alignItems: "center", gap: 8 }}>
-        <div style={{ fontSize: 13, color: "#888", flex: 1 }}>
-          {selected ? `(${selected.x},${selected.y}) → click dest` : "Click piece"}
-        </div>
-        <label style={{ ...labelStyle, cursor: "pointer" }}>
-          <input type="checkbox" checked={usePhysics} onChange={e => setUsePhysics(e.target.checked)} />
-          Physics
-        </label>
-        {usePhysics && (
-          <button style={{ ...btnStyle, fontSize: 11, padding: "3px 8px", background: "#2a2a4a", border: "1px solid #3a3a5a" }}
-            onClick={() => setShowParams(v => !v)}>
-            {showParams ? "Hide" : "Tune"}
-          </button>
-        )}
-        <button style={btnStyle} onClick={fetchBoard}>Refresh</button>
-      </div>
-
-      {usePhysics && showParams && (
-        <div style={{
-          display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 12px",
-          width: "100%", maxWidth: 400, marginBottom: 8,
-          background: "#151525", padding: 10, borderRadius: 6, border: "1px solid #2a2a4a",
-        }}>
-          <label style={labelStyle}>
-            active brake
-            <input type="checkbox" checked={!!physicsParams.active_brake}
-              onChange={e => setPhysicsParams(p => ({ ...p, active_brake: e.target.checked }))} />
-          </label>
-          <label style={labelStyle}>
-            all coils equal
-            <input type="checkbox" checked={!!physicsParams.all_coils_equal}
-              onChange={e => setPhysicsParams(p => ({ ...p, all_coils_equal: e.target.checked }))} />
-          </label>
-          {(Object.entries(PARAM_INFO) as [keyof typeof PARAM_INFO, string][]).map(([key, label]) => (
-            <label key={key} style={labelStyle}>
-              {label}
-              <input
-                type="number"
-                step={key === 'max_duration_ms' || key === 'pwm_freq_hz' ? 1000 : (key === 'mu_static' || key === 'mu_kinetic' || key === 'pwm_compensation') ? 0.05 : (key === 'target_velocity_mm_s' || key === 'target_accel_mm_s2') ? 1 : 0.1}
-                value={physicsParams[key] as number}
-                onChange={e => updateParam(key, e.target.value)}
-                style={{ ...inputStyle, width: 70 }}
-              />
-            </label>
-          ))}
-          <button onClick={() => setPhysicsParams(DEFAULT_PHYSICS_PARAMS)}
-            style={{ ...btnStyle, background: "#2a2a4a", border: "1px solid #3a3a5a", fontSize: 10, gridColumn: "1 / -1" }}>
-            Reset Defaults
-          </button>
-        </div>
-      )}
-
-      {usePhysics && showParams && <PhysicsDebug p={physicsParams} />}
-
-      <div style={{ position: "relative" }}>
+      {/* Board */}
       <div style={{
         display: "grid",
         gridTemplateColumns: `repeat(4, 70px)`,
@@ -213,103 +142,104 @@ export default function HexapawnWidget({ onStatus }: WidgetProps) {
         {MAJOR_ROWS.slice().reverse().map((gy) =>
           ALL_COLS.map((gx) => {
             const piece = getPiece(gx, gy);
-            const isSel = selected?.x === gx && selected?.y === gy;
             const isGrave = gx === GRAVE_COL;
             const isDark = ((gx / 3) + (gy / 3)) % 2 === 1;
 
             return (
               <div
                 key={`${gx}-${gy}`}
-                onClick={() => handleClick(gx, gy)}
                 style={{
                   width: 70, height: 70,
                   background: isGrave ? "#1a1a2e" : isDark ? "#3a5a7c" : "#D7BA89",
                   border: isGrave ? "2px dashed #333" : "none",
-                  boxShadow: isSel ? "inset 0 0 0 4px #f57f17" : "none",
                   display: "flex", justifyContent: "center", alignItems: "center",
                   fontSize: 44,
                   color: piece === PIECE_BLACK ? "#333" : "#fff",
                   WebkitTextStroke: piece !== PIECE_NONE ? "1px #888" : undefined,
-                  cursor: isMoving ? "default" : "pointer",
                   userSelect: "none", borderRadius: 4,
-                  opacity: isMoving ? 0.6 : isGrave ? 0.7 : 1,
+                  opacity: isGrave ? 0.7 : 1,
                 }}
               >
-                {piece === PIECE_WHITE ? "♟" : piece === PIECE_BLACK ? "♟" : ""}
+                {piece === PIECE_WHITE ? "\u265F" : piece === PIECE_BLACK ? "\u265F" : ""}
               </div>
             );
           })
         )}
       </div>
-      {simPos && (() => {
-        // Map continuous grid coords to pixel position on the board
-        // Grid: 4 columns (0,3,6,9) mapped to 0-3, each cell is 70px + 4px gap
-        // padding: 6px on each side
-        const colIdx = simPos.x / 3;  // 0-3 for cols 0,3,6,9
-        const rowIdx = 2 - simPos.y / 3;  // inverted, 0=top
-        const cellSize = 70;
-        const gap = 4;
-        const pad = 6;
-        const px = pad + colIdx * (cellSize + gap) + cellSize / 2;
-        const py = pad + rowIdx * (cellSize + gap) + cellSize / 2;
-        return (
-          <div style={{
-            position: "absolute", left: px - 8, top: py - 8,
-            width: 16, height: 16, borderRadius: "50%",
-            background: "rgba(255, 50, 50, 0.8)",
-            border: "2px solid #fff",
-            pointerEvents: "none",
-            transition: "left 0.05s, top 0.05s",
-            zIndex: 10,
-          }} />
-        );
-      })()}
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 8, width: "100%", maxWidth: 400, alignItems: "center" }}>
+        {step === "idle" && (
+          <>
+            <button onClick={startGame} style={{ ...btnStyle, flex: 1, background: "#1b5e20", fontSize: 14, padding: 10 }}>
+              Play
+            </button>
+            <label style={{ fontSize: 10, color: "#888", display: "flex", alignItems: "center", gap: 4 }}>
+              hint ms
+              <input type="number" value={hintPulseMs} step={10} min={0} max={500}
+                onChange={e => setHintPulseMs(parseInt(e.target.value) || 0)}
+                style={{ width: 45, background: "#0d0d1a", border: "1px solid #333", borderRadius: 4, color: "#e0e0e0", padding: "2px 4px", fontSize: 11 }} />
+            </label>
+            <label style={{ fontSize: 10, color: "#888", display: "flex", alignItems: "center", gap: 4 }}>
+              every ms
+              <input type="number" value={hintIntervalMs} step={100} min={0} max={5000}
+                onChange={e => setHintIntervalMs(parseInt(e.target.value) || 0)}
+                style={{ width: 55, background: "#0d0d1a", border: "1px solid #333", borderRadius: 4, color: "#e0e0e0", padding: "2px 4px", fontSize: 11 }} />
+            </label>
+          </>
+        )}
+        {step === "playing" && (
+          <div style={{ flex: 1, textAlign: "center", color: "#4fc3f7", fontSize: 14 }}>
+            Game in progress...
+          </div>
+        )}
+        {step === "done" && (
+          <>
+            <div style={{
+              flex: 2, textAlign: "center", padding: 8, borderRadius: 4, fontWeight: "bold",
+              background: result?.includes("You") ? "#1b5e20" : "#b71c1c", color: "#fff",
+            }}>
+              {result}
+            </div>
+            <button onClick={() => { setStep("idle"); setLogs([]); setResult(null); }}
+              style={{ ...btnStyle, flex: 1, background: "#2a2a4a", border: "1px solid #3a3a5a" }}>
+              Reset
+            </button>
+          </>
+        )}
+        <button onClick={fetchBoard} style={{ ...btnStyle, background: "#2a2a4a", border: "1px solid #3a3a5a" }}>
+          Refresh
+        </button>
+        <button onClick={resetBoardPhysical} disabled={resetting || step === "playing"}
+          style={{
+            ...btnStyle,
+            background: resetting ? "#444" : "#b45309",
+            border: "1px solid #78350f",
+            opacity: (resetting || step === "playing") ? 0.5 : 1,
+          }}>
+          {resetting ? "Resetting..." : "Reset Board"}
+        </button>
       </div>
-    </div>
-  );
-}
 
-function PhysicsDebug({ p }: { p: typeof DEFAULT_PHYSICS_PARAMS }) {
-  const { piece_mass_g, max_current_a, mu_static, mu_kinetic,
-          target_velocity_mm_s: tv, target_accel_mm_s2: ta } = p;
-
-  const weight = piece_mass_g * 9.81;  // mN
-  const peak_fx = 54.0 * max_current_a;  // approx from force table L0
-  const peak_fz = 101.0 * max_current_a;
-  const normal_active = weight + peak_fz;
-  const static_fric = mu_static * normal_active;
-  const kinetic_fric = mu_kinetic * weight;  // coil off during coast
-  const t_cross = 9 * 12.667 / tv;  // 9 grid units in mm
-  const coast_decel = kinetic_fric / (piece_mass_g * 1e-3);
-  const stop_dist = (tv * tv) / (2 * coast_decel);
-
-  const row = (label: string, value: string) => (
-    <div style={{ display: "flex", justifyContent: "space-between" }}>
-      <span style={{ color: "#888" }}>{label}</span>
-      <span style={{ color: "#e0e0e0" }}>{value}</span>
-    </div>
-  );
-
-  return (
-    <div style={{
-      width: "100%", maxWidth: 400, marginBottom: 8,
-      background: "#0a0a1a", padding: 10, borderRadius: 6, border: "1px solid #2a2a4a",
-      fontSize: 11, fontFamily: "monospace", display: "flex", flexDirection: "column", gap: 2,
-    }}>
-      <div style={{ color: "#666", fontSize: 10, marginBottom: 4 }}>REAL-UNIT PHYSICS</div>
-      {row("Piece weight", `${weight.toFixed(1)} mN`)}
-      {row("Peak lateral (L0, 1A)", `${(54.0 * max_current_a).toFixed(1)} mN`)}
-      {row("Peak Fz (L0, 1A)", `${peak_fz.toFixed(1)} mN (downward)`)}
-      {row("Normal force (coil on)", `${normal_active.toFixed(1)} mN`)}
-      {row("Static friction (coil on)", `${static_fric.toFixed(1)} mN`)}
-      {row("Can overcome stiction?", peak_fx > static_fric ? `YES (${(peak_fx/static_fric).toFixed(1)}x)` : "NO")}
-      {row("Coast friction (coil off)", `${kinetic_fric.toFixed(1)} mN`)}
-      {row("Coast decel", `${coast_decel.toFixed(0)} mm/s\u00B2`)}
-      {row("Stopping distance", `${stop_dist.toFixed(1)} mm at ${tv} mm/s`)}
-      {row("Board traverse (114mm)", `${t_cross.toFixed(2)}s`)}
-      {peak_fx < static_fric && (
-        <div style={{ color: "#ef5350", marginTop: 4 }}>
-          Peak force ({peak_fx.toFixed(1)}) &lt; static friction ({static_fric.toFixed(1)}) — piece won't move!
+      {/* Game log */}
+      {logs.length > 0 && (
+        <div ref={logBoxRef} style={{
+          width: "100%", maxWidth: 400, flex: 1, minHeight: 100, maxHeight: 200,
+          overflow: "auto", background: "#0a0a1a", border: "1px solid #2a2a4a",
+          borderRadius: 6, padding: 8, fontSize: 11, fontFamily: "monospace",
+          color: "#8f8", userSelect: "text", cursor: "text",
+        }}>
+          {logs.map((line, i) => (
+            <div key={i} style={{
+              color: line.includes("WINS") ? "#f57f17"
+                : line.includes("your turn") ? "#4caf50"
+                : line.includes("AI") ? "#ef5350"
+                : line.includes("ERROR") ? "#ef5350"
+                : "#8f8"
+            }}>
+              {line.replace("hexapawn: ", "")}
+            </div>
+          ))}
         </div>
       )}
     </div>

@@ -1,5 +1,20 @@
+export interface CallOptions {
+  // Milliseconds before the pending request is force-rejected with a timeout.
+  // Omit or 0 to disable the timeout entirely (use sparingly — pending slot
+  // remains occupied until a response arrives).
+  timeoutMs?: number;
+}
+
 export interface Transport {
-  call<Res>(method: string, params: Record<string, unknown> | object): Promise<Res>;
+  call<Res>(
+    method: string,
+    params: Record<string, unknown> | object,
+    opts?: CallOptions,
+  ): Promise<Res>;
+  // Fire-and-forget: writes the command but does NOT occupy the pending slot,
+  // does NOT wait for a response. Use for long-running commands that narrate
+  // progress via log messages (e.g. hexapawn_play).
+  send(method: string, params: Record<string, unknown> | object): Promise<void>;
 }
 
 // Serial log for the raw console
@@ -60,10 +75,16 @@ export async function initTransport(): Promise<void> {
 }
 
 export const transport: Transport = {
-  call<Res>(method: string, params: Record<string, unknown>): Promise<Res> {
+  call<Res>(method: string, params: Record<string, unknown>, opts?: CallOptions): Promise<Res> {
     if (!_transport) {
       throw new Error("Transport not initialized. Call initTransport() first.");
     }
-    return _transport.call(method, params);
+    return _transport.call(method, params, opts);
+  },
+  send(method: string, params: Record<string, unknown>): Promise<void> {
+    if (!_transport) {
+      throw new Error("Transport not initialized. Call initTransport() first.");
+    }
+    return _transport.send(method, params);
   },
 };

@@ -10,6 +10,8 @@
 #include "hardware.h"
 #include "physics.h"
 #include "hexapawn.h"
+#include "pathplanner.h"
+#include "hexapawn_table_lookup.h"
 
 // Piece IDs
 #define PIECE_NONE  0
@@ -308,53 +310,74 @@ public:
 
   void setUsePhysics(bool val) { use_physics_moves_ = val; }
 
+  // Detect piece at a grid position using hall sensor + calibration data.
+  // Position must be at a sensor location (multiples of SR_BLOCK).
+  static constexpr float PIECE_DETECT_THRESHOLD = 1990.0f;
+
+  bool detectPiece(uint8_t gx, uint8_t gy) {
+    uint8_t si = sensorForGrid(gx, gy);
+    uint16_t reading = hw_.readSensor(si);
+    return reading < PIECE_DETECT_THRESHOLD;
+  }
+
   // ── Hexapawn Game (autonomous) ──────────────────────────────
   // Runs the entire game on the ESP32. Streams progress via LOG_BOARD.
   // White = human (detected via sensors), Black = AI (moved via coils).
 
   Hexapawn game_;
+  bool hexapawn_running_ = false;
 
   // Sensor detection: does sensor at game col,row detect a piece?
   bool sensorDetectsPiece(int gc, int gr) {
     uint8_t si = sensorForGrid(Hexapawn::toGrid(gc), Hexapawn::toGrid(gr));
     uint16_t reading = hw_.readSensor(si);
-    float baseline = cal_data_.valid ? cal_data_.sensors[si].baseline_mean : 2040.0f;
-    float piece_mean = cal_data_.valid ? cal_data_.sensors[si].piece_mean : 1860.0f;
-    float threshold = (baseline + piece_mean) / 2.0f;
-    return reading < threshold;
+    return reading < PIECE_DETECT_THRESHOLD;
   }
 
-  String hexapawnPlay(uint16_t hint_pulse_ms = 0) {
+  String hexapawnPlay(uint16_t hint_pulse_ms = 0, uint16_t hint_interval_ms = 1000) {
+    // Re-entry guard: a long-running hexapawnPlay pumps poll_callback_ to keep
+    // serial responsive, which means another `hexapawn_play` command can land
+    // mid-game. Without this guard it would reset and re-center everything.
+    if (hexapawn_running_) {
+      LOG_BOARD("hexapawn: already running — refusing re-entry");
+      return Json().add("success", false)
+                   .addStr("error", "already running").build();
+    }
+    struct RunGuard {
+      bool& f;
+      RunGuard(bool& f) : f(f) { f = true; }
+      ~RunGuard() { f = false; }
+    } guard(hexapawn_running_);
+
     game_.reset();
     initDefaultBoard();
 
-    LOG_BOARD("hexapawn: === NEW GAME ===");
+    LOG_BOARD("hexapawn: === NEW GAME === (hint_pulse=%dms, interval=%dms)",
+              hint_pulse_ms, hint_interval_ms);
 
-    // Center all starting pieces with a pulse on each position
-    if (hint_pulse_ms > 0) {
-      LOG_BOARD("hexapawn: centering pieces...");
-      for (int c = 0; c < HP_SIZE; c++) {
-        // White row (row 0)
-        uint8_t gx = Hexapawn::toGrid(c), gy = Hexapawn::toGrid(0);
-        int8_t bit = coordToBit(gx, gy);
-        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
-        delay(100);
-      }
-      for (int c = 0; c < HP_SIZE; c++) {
-        // Black row (row 2)
-        uint8_t gx = Hexapawn::toGrid(c), gy = Hexapawn::toGrid(2);
-        int8_t bit = coordToBit(gx, gy);
-        if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
-        delay(100);
-      }
-    }
-
-    // Verify all 6 pieces are on the board
+    // Center each of the 6 starting pieces individually via the full
+    // centerPiece sequence. Use the detection result from centerPieceImpl
+    // as the per-piece presence check (more reliable than a separate
+    // sensor read because centerPiece polls the sensor throughout every
+    // pulse of its sequence).
     int detected = 0;
-    for (int c = 0; c < HP_SIZE; c++) {
-      if (sensorDetectsPiece(c, 0)) detected++;
-      if (sensorDetectsPiece(c, 2)) detected++;
+    const uint8_t START_X[6] = { 0, 3, 6, 0, 3, 6 };
+    const uint8_t START_Y[6] = { 0, 0, 0, 6, 6, 6 };
+    if (hint_pulse_ms > 0) {
+      LOG_BOARD("hexapawn: centering pieces one at a time...");
+      for (int i = 0; i < 6; i++) {
+        CenterPieceParams cp;
+        cp.x = START_X[i];
+        cp.y = START_Y[i];
+        CenterPieceResult cr = centerPieceImpl(cp);
+        if (cr.detected) detected++;
+      }
+    } else {
+      for (int i = 0; i < 6; i++) {
+        if (detectPiece(START_X[i], START_Y[i])) detected++;
+      }
     }
+
     if (detected < 6) {
       LOG_BOARD("hexapawn: ERROR — only %d/6 pieces detected", detected);
       return Json().add("success", false)
@@ -394,28 +417,46 @@ public:
           }
         }
 
+        // Snapshot graveyard occupancy so a capture can later require the
+        // player to deposit the captured piece in the graveyard column
+        // (main col 3) before the move is accepted.
+        bool graveSensor[HP_SIZE] = {};
+        for (int r = 0; r < HP_SIZE; r++) {
+          graveSensor[r] = sensorDetectsPiece(HP_SIZE, r);  // main col 3
+        }
+
         // Wait for a change — either a white piece lifted or an enemy piece removed
         int lifted_c = -1, lifted_r = -1;
         int captured_c = -1, captured_r = -1;
         bool capturePhase = false;
+        bool graveyardPlaced = false;  // set once the captured piece lands in the graveyard
 
         unsigned long t0 = millis();
+        unsigned long last_hint_ms = 0;
         while (millis() - t0 < 120000) {  // 2 min timeout per turn
           if (poll_callback_) poll_callback_();
           delay(200);
 
           if (!capturePhase) {
-            // Phase 1: detect a piece being lifted or removed
-            // Check if an enemy piece was removed (capture start)
+            // Phase 1: detect a piece being lifted or removed.
+            // A sensor reading loss might be a real lift/capture OR just an
+            // accidental nudge that knocked a piece off-center. Try to recover
+            // via centerPiece first; if the piece comes back, treat it as a
+            // nudge and continue. Otherwise fall through to normal handling.
+
+            // Check if an enemy piece went missing. No recenter attempt —
+            // if the player is removing an enemy piece they intend to
+            // capture; the graveyard-wait loop below actively pulses the
+            // enemy's original square too, so "change of mind" is handled
+            // there rather than as a nudge recovery here.
             for (int c = 0; c < HP_SIZE; c++) {
               for (int r = 0; r < HP_SIZE; r++) {
                 if (game_.board[c][r] == HP_BLACK && blackSensor[c][r] && !sensorDetectsPiece(c, r)) {
-                  // Enemy piece lifted — this is a capture
                   captured_c = c; captured_r = r;
                   LOG_BOARD("hexapawn: enemy piece removed from (%d,%d)", c, r);
-                  LOG_BOARD("hexapawn: place it in the graveyard, then move your piece there");
+                  LOG_BOARD("hexapawn: place it in the graveyard (col 3) or back on (%d,%d) to cancel",
+                            c, r);
                   capturePhase = true;
-                  // Update both firmware and game board state
                   pieces_[Hexapawn::toGrid(c)][Hexapawn::toGrid(r)] = PIECE_NONE;
                   game_.board[c][r] = HP_NONE;
                   break;
@@ -425,27 +466,101 @@ public:
             }
 
             if (!capturePhase) {
-              // Check if a white piece was lifted (normal move start)
+              // Check if a white piece was lifted (normal move start).
+              // "Valid move" includes captures — a piece whose only legal
+              // moves are captures is still a legitimate lift candidate;
+              // the player just has to lift the enemy next to proceed. If
+              // we required a non-capture move here we'd reject any valid
+              // capturing piece whose forward square is blocked.
               for (int c = 0; c < HP_SIZE; c++) {
                 for (int r = 0; r < HP_SIZE; r++) {
                   if (game_.board[c][r] == HP_WHITE && whiteSensor[c][r] && !sensorDetectsPiece(c, r)) {
-                    // Check this piece has valid non-capture moves
-                    bool hasMove = false;
+                    bool hasAnyMove = false;
                     for (int i = 0; i < nMoves; i++) {
-                      if (allMoves[i].fc == c && allMoves[i].fr == r &&
-                          game_.board[allMoves[i].tc][allMoves[i].tr] == HP_NONE) {
-                        hasMove = true;
+                      if (allMoves[i].fc == c && allMoves[i].fr == r) {
+                        hasAnyMove = true;
                         break;
                       }
                     }
-                    if (hasMove) {
+                    if (hasAnyMove) {
                       lifted_c = c; lifted_r = r;
                       LOG_BOARD("hexapawn: white piece lifted from (%d,%d)", c, r);
+                    } else {
+                      // Truly has no legal move — this piece can't be the
+                      // one being played. Treat as an accidental nudge and
+                      // try to recover.
+                      LOG_BOARD("hexapawn: white (%d,%d) has no legal move — attempting recenter", c, r);
+                      CenterPieceParams cp;
+                      cp.x = Hexapawn::toGrid(c);
+                      cp.y = Hexapawn::toGrid(r);
+                      CenterPieceResult cr = centerPieceImpl(cp);
+                      if (cr.detected) {
+                        LOG_BOARD("hexapawn: white (%d,%d) recovered, continuing turn", c, r);
+                        whiteSensor[c][r] = true;
+                      } else {
+                        LOG_BOARD("hexapawn: ERROR — white (%d,%d) lost, cannot recover", c, r);
+                        return Json().add("success", false)
+                                     .addStr("error", "piece lost").build();
+                      }
                     }
                   }
                 }
               }
             }
+          }
+
+          if (capturePhase && !graveyardPlaced) {
+            // Actively cycle through every landing square the captured piece
+            // could reasonably end up on:
+            //   - each empty graveyard slot (commit the capture) AND
+            //   - the piece's original square (player changed their mind).
+            // centerPieceImpl polls the sensor during its pulse sequence, so
+            // whichever square first pulls the piece onto its sensor wins.
+            bool cancelled = false;
+
+            // First: the original square. If the piece is near it, the
+            // centering pulse will snap it back onto the sensor and we
+            // abandon the capture.
+            {
+              CenterPieceParams cp;
+              cp.x = Hexapawn::toGrid((int8_t)captured_c);
+              cp.y = Hexapawn::toGrid((int8_t)captured_r);
+              CenterPieceResult cr = centerPieceImpl(cp);
+              if (cr.detected) {
+                LOG_BOARD("hexapawn: enemy returned to (%d,%d) — capture cancelled",
+                          captured_c, captured_r);
+                pieces_[Hexapawn::toGrid((int8_t)captured_c)][Hexapawn::toGrid((int8_t)captured_r)] =
+                  PIECE_BLACK;
+                game_.board[captured_c][captured_r] = HP_BLACK;
+                blackSensor[captured_c][captured_r] = true;
+                capturePhase = false;
+                captured_c = -1; captured_r = -1;
+                cancelled = true;
+              }
+            }
+
+            // Then: each empty graveyard slot.
+            if (!cancelled) {
+              for (int r = 0; r < HP_SIZE; r++) {
+                if (graveSensor[r]) continue;
+                CenterPieceParams cp;
+                cp.x = Hexapawn::toGrid((int8_t)HP_SIZE);  // col 3 = graveyard
+                cp.y = Hexapawn::toGrid((int8_t)r);
+                CenterPieceResult cr = centerPieceImpl(cp);
+                if (cr.detected) {
+                  graveSensor[r] = true;
+                  graveyardPlaced = true;
+                  pieces_[Hexapawn::toGrid((int8_t)HP_SIZE)][Hexapawn::toGrid((int8_t)r)] =
+                    (game_.turn == HP_WHITE) ? PIECE_BLACK : PIECE_WHITE;
+                  LOG_BOARD("hexapawn: captured piece placed in graveyard slot %d", r);
+                  break;
+                }
+              }
+            }
+
+            // Until placement or cancellation is confirmed, don't accept
+            // the white piece lift.
+            continue;
           }
 
           if (capturePhase && lifted_c < 0) {
@@ -469,14 +584,42 @@ public:
 
           // Wait for placement: white piece appears at valid destination
           if (lifted_c >= 0) {
+            // Capture flow: the only valid destination is where the enemy
+            // used to be (captured_c, captured_r). Actively centerPiece on
+            // that square. Trust the centerPiece detection result rather
+            // than a separate sensor read afterwards.
+            bool captureLanded = false;
+            if (capturePhase) {
+              CenterPieceParams cp;
+              cp.x = Hexapawn::toGrid(captured_c);
+              cp.y = Hexapawn::toGrid(captured_r);
+              CenterPieceResult cr = centerPieceImpl(cp);
+              captureLanded = cr.detected;
+            }
+
             for (int i = 0; i < nMoves; i++) {
               if (allMoves[i].fc != lifted_c || allMoves[i].fr != lifted_r) continue;
               int dc = allMoves[i].tc, dr = allMoves[i].tr;
 
-              // For capture: destination is where enemy was (already empty)
-              // For normal: destination must be empty
               if (dc == lifted_c && dr == lifted_r) continue;  // can't place back
-              if (sensorDetectsPiece(dc, dr)) {
+
+              bool detected;
+              if (capturePhase) {
+                // Only the specific captured piece's square is a valid
+                // destination for this turn.
+                if (dc != captured_c || dr != captured_r) continue;
+                detected = captureLanded;
+              } else {
+                // Non-capture phase: ignore destinations that still have an
+                // enemy on them. A true capture requires the player to lift
+                // the enemy first (→ capturePhase), otherwise the sensor at
+                // the destination just detects the pre-existing enemy and
+                // we'd apply a phantom capture.
+                if (game_.board[dc][dr] != HP_NONE) continue;
+                detected = sensorDetectsPiece(dc, dr);
+              }
+
+              if (detected) {
                 // Piece detected at valid destination
                 LOG_BOARD("hexapawn: piece placed at (%d,%d)", dc, dr);
 
@@ -495,28 +638,37 @@ public:
               }
             }
 
-            // Check if piece was put back (not a move, reset)
-            if (sensorDetectsPiece(lifted_c, lifted_r) && !capturePhase) {
-              LOG_BOARD("hexapawn: piece returned to (%d,%d), still your turn", lifted_c, lifted_r);
+            // Check if piece was put back (not a move, reset). Allowed in
+            // both phases so the player can swap to a different capturing
+            // piece during capturePhase if there are multiple valid options.
+            if (sensorDetectsPiece(lifted_c, lifted_r)) {
+              LOG_BOARD("hexapawn: piece returned to (%d,%d), lift another if you like",
+                        lifted_c, lifted_r);
               lifted_c = -1; lifted_r = -1;
             }
 
-            // Hint: pulse source square + valid destination coils every ~1s
-            if (hint_pulse_ms > 0 && (millis() / 1000 != (millis() - 200) / 1000)) {
-              // Pulse source square (return-to + re-center)
+            // Hint: center_piece on source square + each valid destination,
+            // sequentially. Rate-limited so the full loop over the list cannot
+            // run more than once per second (per user constraint).
+            if (hint_pulse_ms > 0 && hint_interval_ms > 0 &&
+                millis() - last_hint_ms >= hint_interval_ms) {
+              unsigned long hint_start = millis();
               {
-                uint8_t gx = Hexapawn::toGrid(lifted_c), gy = Hexapawn::toGrid(lifted_r);
-                int8_t bit = coordToBit(gx, gy);
-                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
+                CenterPieceParams cp;
+                cp.x = Hexapawn::toGrid(lifted_c);
+                cp.y = Hexapawn::toGrid(lifted_r);
+                centerPiece(cp);
               }
-              // Pulse valid destinations
               for (int i = 0; i < nMoves; i++) {
                 if (allMoves[i].fc != lifted_c || allMoves[i].fr != lifted_r) continue;
-                int dc = allMoves[i].tc, dr = allMoves[i].tr;
-                uint8_t gx = Hexapawn::toGrid(dc), gy = Hexapawn::toGrid(dr);
-                int8_t bit = coordToBit(gx, gy);
-                if (bit >= 0) hw_.pulseBit((uint8_t)bit, hint_pulse_ms, 255);
+                CenterPieceParams cp;
+                cp.x = Hexapawn::toGrid(allMoves[i].tc);
+                cp.y = Hexapawn::toGrid(allMoves[i].tr);
+                centerPiece(cp);
               }
+              unsigned long elapsed = millis() - hint_start;
+              if (elapsed < 1000) delay(1000 - elapsed);
+              last_hint_ms = millis();
             }
           }
         }
@@ -549,10 +701,8 @@ public:
         LOG_BOARD("hexapawn: AI moves (%d,%d)->(%d,%d)%s",
                   ai.fc, ai.fr, ai.tc, ai.tr, capture ? " CAPTURE" : "");
 
-        // Execute physical move FIRST (movePiece handles captures + path clearing)
-        uint8_t gfx = Hexapawn::toGrid(ai.fc), gfy = Hexapawn::toGrid(ai.fr);
-        uint8_t gtx = Hexapawn::toGrid(ai.tc), gty = Hexapawn::toGrid(ai.tr);
-        MoveError err = movePiece(gfx, gfy, gtx, gty);
+        // Execute physical move via path planner + parallel physics.
+        MoveError err = executeHexapawnMove(ai);
         if (err != MoveError::NONE) {
           LOG_BOARD("hexapawn: AI physical move FAILED: %d — applying to game state anyway", (int)err);
         }
@@ -572,6 +722,319 @@ public:
     return Json().add("success", true)
                  .addStr("winner", game_.winner == HP_WHITE ? "white" : "black")
                  .add("moves", move_num).build();
+  }
+
+  // ── Physical Board Reset ───────────────────────────────────
+  // Moves every piece from wherever it currently is back to the starting
+  // configuration: 3 whites at row 0, 3 blacks at row 2, graveyard empty.
+  // Uses the path planner + moveMulti so multiple pieces can travel
+  // simultaneously. Assignment of pieces to target slots is greedy by
+  // Manhattan distance so pieces return to the closest free home square.
+  String resetBoard() {
+    static constexpr uint8_t MAIN_COLS = 4;
+    static constexpr uint8_t MAIN_ROWS = 3;
+    static constexpr uint8_t MAIN_GRAVE_COL = 3;
+    LOG_BOARD("reset: starting physical board reset");
+
+    static const uint8_t W_TARGETS[3][2] = {{0, 0}, {1, 0}, {2, 0}};
+    static const uint8_t B_TARGETS[3][2] = {{0, 2}, {1, 2}, {2, 2}};
+
+    uint8_t mboard[PP_MAX_COLS][PP_MAX_ROWS];
+    memset(mboard, PP_NONE, sizeof(mboard));
+    struct PiecePos { uint8_t x, y; };
+    PiecePos whites[12]; int nw = 0;
+    PiecePos blacks[12]; int nb = 0;
+    for (int mx = 0; mx < MAIN_COLS; mx++) {
+      for (int my = 0; my < MAIN_ROWS; my++) {
+        uint8_t p = getPiece((uint8_t)(mx * 3), (uint8_t)(my * 3));
+        if (p == PIECE_WHITE) {
+          mboard[mx][my] = PP_WHITE;
+          if (nw < 12) whites[nw++] = {(uint8_t)mx, (uint8_t)my};
+        } else if (p == PIECE_BLACK) {
+          mboard[mx][my] = PP_BLACK;
+          if (nb < 12) blacks[nb++] = {(uint8_t)mx, (uint8_t)my};
+        }
+      }
+    }
+
+    LOG_BOARD("reset: found %d whites, %d blacks (incl. graveyard)", nw, nb);
+    for (int i = 0; i < nw; i++) {
+      LOG_BOARD("reset:   white[%d] at (%d,%d)", i, whites[i].x, whites[i].y);
+    }
+    for (int i = 0; i < nb; i++) {
+      LOG_BOARD("reset:   black[%d] at (%d,%d)", i, blacks[i].x, blacks[i].y);
+    }
+
+    MoveGoal goals[PP_MAX_GOALS];
+    int ng = 0;
+
+    auto assignColor = [&](PiecePos* pieces, int n,
+                           const uint8_t targets[][2], int nt,
+                           const char* colorName) {
+      bool assigned[12] = {};
+      for (int t = 0; t < nt; t++) {
+        int best = -1, bestDist = 999;
+        for (int i = 0; i < n; i++) {
+          if (assigned[i]) continue;
+          int d = abs((int)pieces[i].x - (int)targets[t][0]) +
+                  abs((int)pieces[i].y - (int)targets[t][1]);
+          if (d < bestDist) { bestDist = d; best = i; }
+        }
+        if (best < 0) break;
+        assigned[best] = true;
+        if (pieces[best].x != targets[t][0] || pieces[best].y != targets[t][1]) {
+          if (ng < PP_MAX_GOALS) {
+            goals[ng++] = { pieces[best].x, pieces[best].y,
+                            targets[t][0], targets[t][1] };
+            LOG_BOARD("reset: %s (%d,%d) -> (%d,%d)", colorName,
+                      pieces[best].x, pieces[best].y,
+                      targets[t][0], targets[t][1]);
+          }
+        }
+      }
+    };
+
+    assignColor(whites, nw, W_TARGETS, 3, "white");
+    assignColor(blacks, nb, B_TARGETS, 3, "black");
+
+    if (ng == 0) {
+      LOG_BOARD("reset: already in starting position");
+      game_.reset();
+      initDefaultBoard();
+      return Json().add("success", true).add("moves", 0).build();
+    }
+
+    LOG_BOARD("reset: %d pieces need to move", ng);
+
+    // Try the precomputed table first. Reset plans for every reachable
+    // terminal hexapawn position are baked into flash by the offline
+    // generator. Lookup is sub-millisecond vs. up to ~10 s for live
+    // planPath at max_concurrent_moves=1.
+    PlanResult plan = {};
+    bool used_table = false;
+    {
+      uint8_t play_hp[HP_SIZE][HP_SIZE];
+      uint8_t grave_hp[HP_SIZE];
+      for (int c = 0; c < HP_SIZE; c++)
+        for (int r = 0; r < HP_SIZE; r++) {
+          uint8_t v = mboard[c][r];
+          play_hp[c][r] = (v == PP_WHITE) ? HP_WHITE
+                        : (v == PP_BLACK) ? HP_BLACK : HP_NONE;
+        }
+      for (int r = 0; r < HP_SIZE; r++) {
+        uint8_t v = mboard[MAIN_GRAVE_COL][r];
+        grave_hp[r] = (v == PP_WHITE) ? HP_WHITE
+                    : (v == PP_BLACK) ? HP_BLACK : HP_NONE;
+      }
+      uint32_t key = hex_table::packKey(play_hp, grave_hp);
+      bool is_reset = false;
+      if (hex_table::fetchPlan(key, 0, plan, is_reset) && is_reset) {
+        used_table = true;
+        LOG_BOARD("reset: table hit — %d timesteps", plan.num_steps);
+      }
+    }
+
+    if (!used_table) {
+      // Bulk plan: all goals routed simultaneously on the 4x3 main board.
+      uint32_t plan_t0 = millis();
+      plan = planPath(mboard, MAIN_COLS, MAIN_ROWS, goals, ng,
+                      physics_params_.max_concurrent_moves);
+      uint32_t plan_ms = millis() - plan_t0;
+      if (plan.status != PlanResult::OK) {
+        LOG_BOARD("reset: live planPath FAILED status=%d (%lu ms)",
+                  (int)plan.status, (unsigned long)plan_ms);
+        return Json().add("success", false)
+                     .addStr("error", "plan failed").build();
+      }
+      LOG_BOARD("reset: live plan OK — %d timesteps (%lu ms)",
+                plan.num_steps, (unsigned long)plan_ms);
+    }
+
+    for (int t = 0; t < plan.num_steps; t++) {
+      const TimeStep& ts = plan.steps[t];
+      if (ts.num_moves <= 0) continue;
+      if (ts.num_moves > MAX_MULTI_MOVES) {
+        LOG_BOARD("reset: timestep %d has %d moves > %d cap — aborting",
+                  t, ts.num_moves, MAX_MULTI_MOVES);
+        return Json().add("success", false)
+                     .addStr("error", "too many simultaneous moves").build();
+      }
+
+      MultiMoveRequest req[MAX_MULTI_MOVES];
+      int reqCount = 0;
+      for (int i = 0; i < ts.num_moves; i++) {
+        const PieceMove& pm = ts.moves[i];
+        int dx = (int)pm.toX - (int)pm.fromX;
+        int dy = (int)pm.toY - (int)pm.fromY;
+        if (dx == 0 && dy == 0) continue;
+        bool orthoOne = ((dx == 0 && (dy == 1 || dy == -1)) ||
+                         (dy == 0 && (dx == 1 || dx == -1)));
+        if (!orthoOne) {
+          LOG_BOARD("reset: REJECT non-orthogonal step t=%d (%d,%d)->(%d,%d)",
+                    t, pm.fromX, pm.fromY, pm.toX, pm.toY);
+          return Json().add("success", false)
+                       .addStr("error", "non-orthogonal step").build();
+        }
+        req[reqCount++] = { (uint8_t)(pm.fromX * 3), (uint8_t)(pm.fromY * 3),
+                            (uint8_t)(pm.toX * 3),   (uint8_t)(pm.toY * 3) };
+      }
+      if (reqCount == 0) continue;
+
+      LOG_BOARD("reset: step %d (%d moves)", t, reqCount);
+      for (int i = 0; i < reqCount; i++) {
+        LOG_BOARD("  move %d: (%d,%d)->(%d,%d)", i,
+                  req[i].from_x, req[i].from_y, req[i].to_x, req[i].to_y);
+      }
+      String result = moveMulti(req, reqCount);
+      if (result.indexOf("\"success\":true") < 0) {
+        LOG_BOARD("reset: step %d failed: %s", t, result.c_str());
+        return Json().add("success", false)
+                     .addStr("error", "move failed").build();
+      }
+      if (poll_callback_) poll_callback_();
+    }
+
+    // Sync game state to the reset position.
+    game_.reset();
+    initDefaultBoard();
+    LOG_BOARD("reset: complete, %d pieces moved", ng);
+    return Json().add("success", true).add("moves", ng).build();
+  }
+
+  // ── Hexapawn move execution via path planner ──────────────
+  // Takes a HexapawnMove in game (3x3) coords, plans parallel multi-piece
+  // motion on the 4x3 main grid (col 3 is the graveyard), then dispatches
+  // each timestep to moveMulti for simultaneous coil-driven execution.
+  //
+  // For a capture, the captured piece is routed into an empty graveyard
+  // slot as an additional commanded goal in the same plan. Non-involved
+  // pieces may be temporarily displaced by the planner but must return
+  // home — the planner's implicit-goals machinery enforces this.
+  MoveError executeHexapawnMove(const HexapawnMove& m) {
+    static constexpr uint8_t MAIN_COLS = 4;
+    static constexpr uint8_t MAIN_ROWS = 3;
+    static constexpr uint8_t MAIN_GRAVE_COL = 3;
+
+    // Snapshot the main-grid board state from subdivided pieces_.
+    uint8_t mboard[PP_MAX_COLS][PP_MAX_ROWS];
+    memset(mboard, PP_NONE, sizeof(mboard));
+    for (int mx = 0; mx < MAIN_COLS; mx++) {
+      for (int my = 0; my < MAIN_ROWS; my++) {
+        uint8_t p = getPiece((uint8_t)(mx * 3), (uint8_t)(my * 3));
+        if (p == PIECE_WHITE) mboard[mx][my] = PP_WHITE;
+        else if (p == PIECE_BLACK) mboard[mx][my] = PP_BLACK;
+      }
+    }
+
+    // ── Try the precomputed table first ────────────────────────
+    // The offline generator covers every reachable AI-turn state up to
+    // the graveyard capacity. Runtime lookup is a binary search + byte
+    // copy — no planPath call in the hot path.
+    PlanResult plan = {};
+    bool used_table = false;
+    {
+      uint8_t play_hp[HP_SIZE][HP_SIZE];
+      uint8_t grave_hp[HP_SIZE];
+      for (int c = 0; c < HP_SIZE; c++)
+        for (int r = 0; r < HP_SIZE; r++) {
+          uint8_t v = mboard[c][r];
+          play_hp[c][r] = (v == PP_WHITE) ? HP_WHITE
+                        : (v == PP_BLACK) ? HP_BLACK : HP_NONE;
+        }
+      for (int r = 0; r < HP_SIZE; r++) {
+        uint8_t v = mboard[MAIN_GRAVE_COL][r];
+        grave_hp[r] = (v == PP_WHITE) ? HP_WHITE
+                    : (v == PP_BLACK) ? HP_BLACK : HP_NONE;
+      }
+      uint32_t key = hex_table::packKey(play_hp, grave_hp);
+      bool is_reset = false;
+      // pick=0 chooses the first optimal move. A future enhancement could
+      // randomise among ties for move variety.
+      if (hex_table::fetchPlan(key, 0, plan, is_reset) && !is_reset) {
+        used_table = true;
+        LOG_BOARD("executeHexapawnMove: table hit — %d timesteps", plan.num_steps);
+      }
+    }
+
+    if (!used_table) {
+      bool isCapture = (mboard[m.tc][m.tr] != PP_NONE &&
+                        mboard[m.tc][m.tr] != mboard[m.fc][m.fr]);
+
+      MoveGoal goals[PP_MAX_GOALS];
+      int n = 0;
+      goals[n++] = {(uint8_t)m.fc, (uint8_t)m.fr,
+                    (uint8_t)m.tc, (uint8_t)m.tr};
+      if (isCapture) {
+        goals[n++] = {(uint8_t)m.tc, (uint8_t)m.tr,
+                      MAIN_GRAVE_COL, PP_ANY};
+      }
+
+      uint32_t plan_t0 = millis();
+      plan = planPath(mboard, MAIN_COLS, MAIN_ROWS, goals, n,
+                      physics_params_.max_concurrent_moves);
+      uint32_t plan_ms = millis() - plan_t0;
+      if (plan.status != PlanResult::OK) {
+        LOG_BOARD("executeHexapawnMove: live planPath failed status=%d (%lu ms)",
+                  (int)plan.status, (unsigned long)plan_ms);
+        return MoveError::COIL_FAILURE;
+      }
+      LOG_BOARD("executeHexapawnMove: live plan ok — %d timesteps (%lu ms)",
+                plan.num_steps, (unsigned long)plan_ms);
+    }
+
+    // Dispatch each timestep as a simultaneous moveMulti, translating
+    // main-grid coords back to subdivided coords (×3).
+    for (int t = 0; t < plan.num_steps; t++) {
+      const TimeStep& ts = plan.steps[t];
+      if (ts.num_moves <= 0) continue;
+      if (ts.num_moves > MAX_MULTI_MOVES) {
+        LOG_BOARD("executeHexapawnMove: timestep %d has %d moves > %d cap",
+                  t, ts.num_moves, MAX_MULTI_MOVES);
+        return MoveError::COIL_FAILURE;
+      }
+
+      MultiMoveRequest req[MAX_MULTI_MOVES];
+      int reqCount = 0;
+      for (int i = 0; i < ts.num_moves; i++) {
+        const PieceMove& pm = ts.moves[i];
+        int dx = (int)pm.toX - (int)pm.fromX;
+        int dy = (int)pm.toY - (int)pm.fromY;
+        // The path planner is documented to emit only orthogonal 1-cell
+        // steps per timestep (stays allowed). Hexapawn execution does not
+        // support diagonal coil sequences — if the planner ever emits one
+        // (or a >1-cell step), reject the whole AI move rather than silently
+        // commanding a broken diagonal that would leave the attacker stuck.
+        if (dx == 0 && dy == 0) continue;  // stay — skip
+        bool orthogonalOne = ((dx == 0 && (dy == 1 || dy == -1)) ||
+                              (dy == 0 && (dx == 1 || dx == -1)));
+        if (!orthogonalOne) {
+          LOG_BOARD("executeHexapawnMove: REJECT non-orthogonal step t=%d "
+                    "piece %d (%d,%d)->(%d,%d) d=(%d,%d)",
+                    t, i, pm.fromX, pm.fromY, pm.toX, pm.toY, dx, dy);
+          return MoveError::COIL_FAILURE;
+        }
+        req[reqCount++] = { (uint8_t)(pm.fromX * 3), (uint8_t)(pm.fromY * 3),
+                            (uint8_t)(pm.toX * 3),   (uint8_t)(pm.toY * 3) };
+      }
+      if (reqCount == 0) {
+        LOG_BOARD("executeHexapawnMove: step %d — all moves were stays, skipping", t);
+        continue;
+      }
+      LOG_BOARD("executeHexapawnMove: step %d (%d real moves)", t, reqCount);
+      for (int i = 0; i < reqCount; i++) {
+        LOG_BOARD("  move %d: (%d,%d)->(%d,%d)", i,
+                  req[i].from_x, req[i].from_y, req[i].to_x, req[i].to_y);
+      }
+      String result = moveMulti(req, reqCount);
+      // moveMulti's returned JSON includes success=true/false; a simple
+      // substring check is cheap and avoids dragging in a JSON parser.
+      if (result.indexOf("\"success\":true") < 0) {
+        LOG_BOARD("executeHexapawnMove: step %d failed: %s", t, result.c_str());
+        return MoveError::COIL_FAILURE;
+      }
+      if (poll_callback_) poll_callback_();
+    }
+    return MoveError::NONE;
   }
 
   MoveError movePiece(uint8_t fromX, uint8_t fromY, uint8_t toX, uint8_t toY,
@@ -619,7 +1082,7 @@ public:
   // ── Multi Move (simultaneous) ──────────────────────────────
   // Moves multiple pieces simultaneously using discrete on/off coil control.
 
-  static constexpr int MAX_MULTI_MOVES = 4;
+  static constexpr int MAX_MULTI_MOVES = 6;
   static constexpr int MAX_PATH_LEN = GRID_COLS + GRID_ROWS;
 
   struct MultiMoveRequest {
@@ -687,6 +1150,18 @@ public:
 
         LOG_BOARD("moveMulti: queue ORTHO %d (%d,%d)->(%d,%d) path_len=%d",
                   queued, m.from_x, m.from_y, m.to_x, m.to_y, plen);
+        // Log the exact coil sequence for this slot so we can see what
+        // coordinates were actually commanded. Useful for debugging cases
+        // where a piece physically fails to move.
+        int8_t sx = m.from_x, sy = m.from_y;
+        for (int p = 0; p < plen; p++) {
+          int pgx = (int)(paths[queued][p][0] / GRID_TO_MM + 0.5f);
+          int pgy = (int)(paths[queued][p][1] / GRID_TO_MM + 0.5f);
+          int8_t bit = coordToBit((uint8_t)pgx, (uint8_t)pgy);
+          LOG_BOARD("moveMulti:   slot %d coil[%d] at (%d,%d) bit=%d",
+                    queued, p, pgx, pgy, bit);
+          (void)sx; (void)sy;
+        }
         physics_.queueMove(states[queued], paths[queued], plen);
       }
       queued++;
@@ -699,21 +1174,97 @@ public:
     // Execute all simultaneously
     physics_.executeMulti(params);
 
-    // Update board state for successful moves
+    // Update board state for successful moves.
+    //
+    // Two-phase update (critical): if we naively did
+    //   pieces_[from]=NONE; pieces_[to]=pieces_[from];
+    // per slot in order, a follow-the-leader pattern where slot A's
+    // destination equals slot B's source (e.g. attacker arriving at the
+    // captured piece's square while captured leaves in the same timestep)
+    // would corrupt B's piece colour — A's colour would get carried over to
+    // B's destination. Instead, snapshot every piece colour FIRST, then
+    // clear all froms, then write all tos.
     bool all_ok = true;
     String results = "[";
     int qi = 0;
+
+    // Phase 1: read piece colours before any mutation.
+    uint8_t piece_colours[MAX_MULTI_MOVES] = {};
+    bool piece_ok[MAX_MULTI_MOVES] = {};
+    {
+      int qi2 = 0;
+      for (int i = 0; i < count; i++) {
+        const auto& m = moves[i];
+        if (m.from_x == m.to_x && m.from_y == m.to_y) continue;
+        piece_colours[qi2] = pieces_[m.from_x][m.from_y];
+        piece_ok[qi2] = (physics_.slots_[qi2].error == MoveError::NONE);
+        qi2++;
+      }
+    }
+
+    // Phase 1.5: physically verify each "successful" slot's arrival. The
+    // physics leader-arrival-snap can mark a non-leader slot as arrived
+    // when its piece hasn't actually moved. For each apparently-successful
+    // slot, read the destination sensor; if no piece is there, run a full
+    // centerPiece pull on that square. If that also fails to detect the
+    // piece, downgrade the slot to failure (pieces_ won't be updated and
+    // all_ok goes false — the caller aborts cleanly).
+    {
+      int qi2 = 0;
+      for (int i = 0; i < count; i++) {
+        const auto& m = moves[i];
+        if (m.from_x == m.to_x && m.from_y == m.to_y) continue;
+        if (piece_ok[qi2]) {
+          if (!detectPiece(m.to_x, m.to_y)) {
+            LOG_BOARD("moveMulti: slot %d not detected at (%d,%d) — recenter attempt",
+                      qi2, m.to_x, m.to_y);
+            CenterPieceParams cp;
+            cp.x = m.to_x;
+            cp.y = m.to_y;
+            CenterPieceResult cr = centerPieceImpl(cp);
+            if (!cr.detected) {
+              LOG_BOARD("moveMulti: slot %d RECENTER FAILED (%d,%d) — aborting slot",
+                        qi2, m.to_x, m.to_y);
+              piece_ok[qi2] = false;
+            } else {
+              LOG_BOARD("moveMulti: slot %d recovered via recenter at (%d,%d)",
+                        qi2, m.to_x, m.to_y);
+            }
+          }
+        }
+        qi2++;
+      }
+    }
+
+    // Phase 2: clear all source cells for successful moves.
+    {
+      int qi2 = 0;
+      for (int i = 0; i < count; i++) {
+        const auto& m = moves[i];
+        if (m.from_x == m.to_x && m.from_y == m.to_y) continue;
+        if (piece_ok[qi2]) pieces_[m.from_x][m.from_y] = PIECE_NONE;
+        qi2++;
+      }
+    }
+
+    // Phase 3: write destination cells using the pre-captured piece colours.
     for (int i = 0; i < count; i++) {
       const auto& m = moves[i];
       if (m.from_x == m.to_x && m.from_y == m.to_y) continue;
 
-      bool ok = (physics_.slots_[qi].error == MoveError::NONE);
+      bool ok = piece_ok[qi];
       if (ok) {
-        uint8_t piece = pieces_[m.from_x][m.from_y];
-        pieces_[m.from_x][m.from_y] = PIECE_NONE;
-        pieces_[m.to_x][m.to_y] = piece;
+        pieces_[m.to_x][m.to_y] = piece_colours[qi];
+        LOG_BOARD("moveMulti: slot %d OK  (%d,%d)->(%d,%d) piece=%d",
+                  qi, m.from_x, m.from_y, m.to_x, m.to_y, piece_colours[qi]);
       } else {
         all_ok = false;
+        LOG_BOARD("moveMulti: slot %d FAIL (%d,%d)->(%d,%d) error=%d "
+                  "final pos=(%.1f,%.1f)",
+                  qi, m.from_x, m.from_y, m.to_x, m.to_y,
+                  (int)physics_.slots_[qi].error,
+                  physics_.slots_[qi].piece ? physics_.slots_[qi].piece->x : -1.0f,
+                  physics_.slots_[qi].piece ? physics_.slots_[qi].piece->y : -1.0f);
       }
 
       if (qi > 0) results += ",";
@@ -721,6 +1272,11 @@ public:
       qi++;
     }
     results += "]";
+
+    if (!all_ok) {
+      LOG_BOARD("moveMulti: === OVERALL FAIL, %d/%d slots errored ===",
+                qi, queued);
+    }
 
     return Json().add("success", all_ok).addRaw("moves", results).build();
   }
@@ -889,6 +1445,143 @@ public:
 
     LOG_BOARD("edge: complete");
     return Json().add("success", true).build();
+  }
+
+  // ── Center Piece ───────────────────────────────────────────
+  // Sequence at a major-grid square (cx,cy) on multiples of SR_BLOCK:
+  //   1) center coil for center1_ms
+  //   2) each adjacent coil (W, E, N, S) for adj_ms — skips if off-grid
+  //   3) center coil for center2_ms
+  // Polls the sensor before each pulse and returns early once detected.
+  struct CenterPieceParams {
+    uint8_t  x = 3;
+    uint8_t  y = 3;
+    uint16_t center1_ms = 250;
+    uint16_t adj_ms = 40;
+    uint16_t between_ms = 100;      // center pulse between same-axis directions (N→S, E→W)
+    uint16_t axis_switch_ms = 200;  // center pulse when switching NS → EW axis (S→E)
+    uint16_t center2_ms = 200;
+    uint8_t  adj_repeats = 1;
+  };
+
+  struct CenterPieceResult {
+    bool success = false;
+    bool detected = false;
+    const char* detected_at = "";
+    const char* error = "";
+  };
+
+  // JSON wrapper for serial handler.
+  String centerPiece(const CenterPieceParams& p) {
+    CenterPieceResult r = centerPieceImpl(p);
+    Json j;
+    j.add("success", r.success).add("detected", r.detected)
+     .addStr("detected_at", r.detected_at);
+    if (r.error && r.error[0]) j.addStr("error", r.error);
+    return j.build();
+  }
+
+  // In-firmware entry point — callers can check `detected` directly instead
+  // of polling the sensor afterwards (more reliable: centerPiece polls the
+  // sensor throughout every pulse, so any momentary detection is captured).
+  CenterPieceResult centerPieceImpl(const CenterPieceParams& p) {
+    LOG_BOARD("center: (%d,%d) c1=%dms adj=%dms between=%dms axis=%dms x%d c2=%dms",
+              p.x, p.y, p.center1_ms, p.adj_ms, p.between_ms, p.axis_switch_ms,
+              p.adj_repeats, p.center2_ms);
+
+    CenterPieceResult out;
+    if (p.x >= GRID_COLS || p.y >= GRID_ROWS ||
+        p.x % SR_BLOCK != 0 || p.y % SR_BLOCK != 0) {
+      LOG_BOARD("center: invalid major-grid coord");
+      out.error = "invalid coord";
+      return out;
+    }
+    int8_t centerBit = coordToBit(p.x, p.y);
+    if (centerBit < 0) {
+      out.error = "no center coil";
+      return out;
+    }
+
+    bool detected = false;
+    const char* detected_at = "";
+
+    // Fire a coil for the full `ms` while continuously polling the sensor.
+    // Records the first phase to detect but does NOT stop the pulse early —
+    // the full sequence still completes so the piece ends up centered.
+    // Also pumps the serial poll callback so commands don't time out while
+    // long centering sequences are running (e.g. during hexapawn startup).
+    auto pulseWithPolling = [&](int8_t bit, uint16_t ms, const char* where) {
+      if (bit < 0 || ms == 0) return;
+      if (!hw_.startCoil((uint8_t)bit, 255)) return;
+      uint32_t start = millis();
+      while (millis() - start < ms) {
+        if (!detected && detectPiece(p.x, p.y)) {
+          detected = true;
+          detected_at = where;
+          LOG_BOARD("center: detected during %s (t=%ums)",
+                    where, (unsigned)(millis() - start));
+        }
+        if (poll_callback_) poll_callback_();
+      }
+      hw_.stopAllCoils();
+    };
+
+    // Initial read before any pulse
+    if (detectPiece(p.x, p.y)) {
+      detected = true;
+      detected_at = "start";
+      LOG_BOARD("center: already detected at start");
+    }
+
+    // Read + log the detect sensor strength after a centering pulse.
+    uint8_t sensorIdx = sensorForGrid(p.x, p.y);
+    auto logDetectStrength = [&](const char* where) {
+      uint16_t reading = hw_.readSensor(sensorIdx);
+      LOG_BOARD("center: %s detect strength=%u (thr=%.0f)",
+                where, reading, PIECE_DETECT_THRESHOLD);
+    };
+
+    pulseWithPolling(centerBit, p.center1_ms, "center1");
+    logDetectStrength("center1");
+
+    // Each repeat is: S, N, W, E then center2.
+    // A short center pulse fires between every cardinal direction.
+    const int8_t dx[]   = {  0,  0, -1,  1 };
+    const int8_t dy[]   = {  1, -1,  0,  0 };
+    const char* names[] = { "S", "N", "W", "E" };
+    const int num_dirs = 4;
+    for (int r = 0; r < p.adj_repeats; r++) {
+      for (int i = 0; i < num_dirs; i++) {
+        int nx = (int)p.x + dx[i];
+        int ny = (int)p.y + dy[i];
+        if (nx < 0 || ny < 0 || nx >= GRID_COLS || ny >= GRID_ROWS) continue;
+        int8_t bit = coordToBit((uint8_t)nx, (uint8_t)ny);
+        if (bit < 0) continue;
+        pulseWithPolling(bit, p.adj_ms, names[i]);
+        if (i < num_dirs - 1) {
+          // i==1 is the transition from NS pair (N,S) to EW pair (E,W)
+          bool is_axis_switch = (i == 1);
+          pulseWithPolling(centerBit,
+                           is_axis_switch ? p.axis_switch_ms : p.between_ms,
+                           is_axis_switch ? "axis_switch" : "between");
+        }
+      }
+      pulseWithPolling(centerBit, p.center2_ms, "center2");
+      logDetectStrength("center2");
+    }
+
+    // Final read after all pulses
+    if (!detected && detectPiece(p.x, p.y)) {
+      detected = true;
+      detected_at = "end";
+    }
+
+    LOG_BOARD("center: %s%s", detected ? "DETECTED at " : "not detected",
+              detected ? detected_at : "");
+    out.success = true;
+    out.detected = detected;
+    out.detected_at = detected_at;
+    return out;
   }
 
   // Kill a piece by moving it to the graveyard.
@@ -1467,6 +2160,10 @@ public:
     LOG_BOARD("physics params updated and saved to NVS");
   }
 
+  void setPhysicsParamsNoSave(const PhysicsParams& p) {
+    physics_params_ = p;
+  }
+
   String physicsParamsToJson() const {
     const auto& p = physics_params_;
     String j = "{";
@@ -1486,6 +2183,8 @@ public:
     j += ",\"max_duration_ms\":"; j += String(p.max_duration_ms);
     j += ",\"max_retry_attempts\":"; j += String(p.max_retry_attempts);
     j += ",\"tick_ms\":"; j += String(p.tick_ms);
+    j += ",\"droop_per_piece\":"; j += String(p.droop_per_piece, 3);
+    j += ",\"max_concurrent_moves\":"; j += String(p.max_concurrent_moves);
     j += "}";
     return j;
   }
@@ -1512,7 +2211,9 @@ public:
 
 private:
   Hardware hw_;
-  uint8_t pieces_[GRID_COLS][GRID_ROWS];
+  uint8_t pieces_[GRID_COLS][GRID_ROWS] = {};  // zero-initialised so the
+                                                // graveyard column starts
+                                                // empty at boot time
   CalData cal_data_;
   PieceState piece_states_[GRID_COLS][GRID_ROWS];
   PhysicsMove physics_{hw_};
@@ -1539,6 +2240,7 @@ private:
     physics_params_.max_duration_ms    = prefs_.getUShort("timeout", physics_params_.max_duration_ms);
     physics_params_.max_retry_attempts = prefs_.getUChar("retries", physics_params_.max_retry_attempts);
     physics_params_.tick_ms            = prefs_.getUChar("tick_ms", physics_params_.tick_ms);
+    physics_params_.max_concurrent_moves = prefs_.getUChar("max_cmov", physics_params_.max_concurrent_moves);
     prefs_.end();
     LOG_BOARD("physics params loaded from NVS (I=%.2fA v=%.0f a=%.0f)",
               physics_params_.max_current_a, physics_params_.target_velocity_mm_s, physics_params_.target_accel_mm_s2);
@@ -1562,6 +2264,7 @@ private:
     prefs_.putUShort("timeout", physics_params_.max_duration_ms);
     prefs_.putUChar("retries", physics_params_.max_retry_attempts);
     prefs_.putUChar("tick_ms", physics_params_.tick_ms);
+    prefs_.putUChar("max_cmov", physics_params_.max_concurrent_moves);
     prefs_.end();
   }
 
@@ -1570,7 +2273,15 @@ private:
   // Missing 4th piece on each side (only 3 per side)
 
   void initDefaultBoard() {
-    memset(pieces_, PIECE_NONE, sizeof(pieces_));
+    // The graveyard (column 9) is treated as part of the board — killed
+    // pieces have a real tracked location there and must survive init. Only
+    // clear the playable 3x3 and restore the starting layout; leave col 9
+    // alone so `resetBoard` can route graveyard pieces home like any other.
+    static constexpr uint8_t GRAVE_COL = 9;
+    for (uint8_t x = 0; x < GRID_COLS; x++) {
+      if (x == GRAVE_COL) continue;
+      for (uint8_t y = 0; y < GRID_ROWS; y++) pieces_[x][y] = PIECE_NONE;
+    }
 
     // 3 white at y=0
     pieces_[0][0] = PIECE_WHITE;
@@ -1587,7 +2298,10 @@ private:
       for (int y = 0; y < GRID_ROWS; y++)
         piece_states_[x][y].reset(x * GRID_TO_MM, y * GRID_TO_MM);
 
-    LOG_BOARD("initDefaultBoard: 3 white at y=0, 3 black at y=6");
+    int graveCount = 0;
+    for (int r = 0; r < 3; r++) if (pieces_[GRAVE_COL][r * 3] != PIECE_NONE) graveCount++;
+    LOG_BOARD("initDefaultBoard: 3 white at y=0, 3 black at y=6, graveyard preserved (%d pieces)",
+              graveCount);
   }
 
   // ── Calibration Helpers ──────────────────────────────────────

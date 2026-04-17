@@ -11,3 +11,26 @@ data/
 codegen/.venv/
 **/target/
 build_test/
+
+# Browser-automation (playwright-mcp) debug logs / page dumps
+.playwright-mcp/
+
+# Arduino / ESP32 build artefacts
+build_demo/
+build_demo_random/
+
+# Compiled host-side test / tool binaries (source still tracked).
+# Match mach-o + linux ELF outputs from tests/ and firmware/pathplanner/.
+tests/test_coil_trap
+tests/test_diagonal
+tests/test_hexapawn
+tests/test_reset_board
+tests/verify_physics
+tests/gen_hexapawn_tables
+firmware/pathplanner/pathplanner
+firmware/pathplanner/profile
+firmware_demo/pathplanner
+firmware_demo_random/pathplanner
+
+# macOS debug symbols
+*.dSYM/
