@@ -107,6 +107,44 @@ public:
     return true;
   }
 
+
+  // Play a musical note on a specific coil
+  bool playNote(uint8_t globalBit, uint16_t freq_hz, uint16_t duration_ms, uint8_t volume_duty = 128) {
+    if (!validateBit(globalBit)) return false;
+
+    // 1. Thermal check (notes generate heat just like moves)
+    float heat = decayHeat(globalBit);
+    if (heat + duration_ms > THERMAL_MAX_HEAT_MS) {
+      LOG_HW("playNote REJECT: bit %d thermal limit", globalBit);
+      return false;
+    }
+
+    // 2. Set PWM to the audible musical frequency
+    analogWriteFrequency(PIN_SR_OE, freq_hz);
+
+    // 3. Turn on the specific coil with the duty cycle (volume)
+    srSetBit(globalBit, true);
+    srSetPWM(volume_duty);
+    
+    // 4. Hold the note
+    delay(duration_ms);
+
+    // 5. Turn off the coil
+    srSetPWM(0);
+    srSetBit(globalBit, false);
+
+    // 6. RESTORE to silent ultrasonic frequency for standard moves!
+    analogWriteFrequency(PIN_SR_OE, 20000);
+
+    // 7. Record the heat generated
+    heat_ms_[globalBit] = heat + duration_ms * (volume_duty / 255.0f);
+    heat_updated_[globalBit] = millis();
+    
+    return true;
+  }
+
+
+
   // Activate a coil and leave it on (for use with sustainCoil).
   // Clears all bits, sets the requested bit, flushes to hardware.
   bool startCoil(uint8_t globalBit, uint8_t pwm_duty = 255) {

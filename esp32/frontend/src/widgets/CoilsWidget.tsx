@@ -10,10 +10,10 @@ const SR_BLOCK = 3;
 // ── Layer Definitions (Mapped to lx, ly) ──────────────────────
 const LAYERS = [
   { id: 1, name: "L1 (Base)", lx: 0, ly: 0, color: "#1f77b4" },
-  { id: 2, name: "L2 (1/3 H)", lx: 1, ly: 0, color: "#ff7f0e" },
-  { id: 3, name: "L3 (2/3 H)", lx: 2, ly: 0, color: "#2ca02c" },
-  { id: 4, name: "L4 (1/3 V)", lx: 0, ly: 1, color: "#d62728" },
-  { id: 5, name: "L5 (2/3 V)", lx: 0, ly: 2, color: "#9467bd" },
+  { id: 2, name: "L2 (1/3 H)", lx: 1, ly: 0, color: "#1f77b4" },
+  { id: 3, name: "L3 (2/3 H)", lx: 2, ly: 0, color: "#1f77b4" },
+  { id: 4, name: "L4 (1/3 V)", lx: 0, ly: 1, color: "#1f77b4" },
+  { id: 5, name: "L5 (2/3 V)", lx: 0, ly: 2, color: "#1f77b4" },
 ];
 
 function getLayerInfo(x: number, y: number) {
@@ -37,7 +37,8 @@ export default function CoilsWidget({ onStatus }: WidgetProps) {
 
   // ── React State (UI Controls) ───────────────────────────────
   const [mode, setMode] = useState<"direct" | "sequence">("direct");
-  const [pulseDuration, setPulseDuration] = useState(100);
+  const [pulseDuration, setPulseDuration] = useState<number>(100);
+  const [pulseDurationInput, setPulseDurationInput] = useState<string>("100");
   const [layerVis, setLayerVis] = useState<Record<number, boolean>>({
     1: true, 2: true, 3: true, 4: true, 5: true,
   });
@@ -231,10 +232,17 @@ export default function CoilsWidget({ onStatus }: WidgetProps) {
     engine.pulsingY = y;
     canvasRef.current?.dispatchEvent(new MouseEvent('mousemove')); 
 
+    
+    onStatus(`SET PULSE ${pulseDuration}, ${overrideDuration}`)
+    await new Promise((resolve) => setTimeout(resolve, 1000));
     const dur = overrideDuration || pulseDuration;
-
+    onStatus(`SET PULSE ${dur}`)
+    
     try {
+      onStatus(`Pulsing ${x}, ${y} with duration ${dur}... ${overrideDuration} ${pulseDuration}`)
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       const res = await pulseCoil({ x, y, duration_ms: dur });
+      
       if (mode === "direct") {
         onStatus(res.success ? `Pulsed Layer ${getLayerInfo(x, y)?.id} (${x},${y})` : `Error: ${res.error}`);
       }
@@ -328,9 +336,27 @@ export default function CoilsWidget({ onStatus }: WidgetProps) {
           <label style={{ ...labelStyle, marginBottom: 8 }}>Default Pulse (ms)</label>
           <input 
             id="pulse-dur-input"
-            type="number" value={pulseDuration} min={1} max={1000} 
+            type="number"
+            value={pulseDurationInput} min={1} max={1000} 
             style={{ ...inputStyle, width: "100%" }} 
-            onChange={(e) => setPulseDuration(Number(e.target.value))} 
+            onChange={(e) => {
+                const val = e.target.value;
+                setPulseDurationInput(val);
+
+                const num = Number(val);
+                if (val !== "" && !isNaN(num)) {
+                    setPulseDuration(num);
+                }
+            }}
+            onBlur={() => {
+                if (pulseDurationInput === "" || isNaN(Number(pulseDurationInput))) {
+                    setPulseDurationInput(pulseDuration.toString());
+                } else {
+                    const clamped = Math.max(1, Math.min(1000, Number(pulseDurationInput)));
+                    setPulseDuration(clamped);
+                    setPulseDurationInput(clamped.toString());
+                }
+            }}
             disabled={isPlayingSeq}
           />
         </div>

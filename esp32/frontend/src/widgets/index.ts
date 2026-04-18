@@ -10,6 +10,7 @@ import PhysicsSettingsWidget from "./PhysicsSettingsWidget";
 import DiagonalTestWidget from "./DiagonalTestWidget";
 import EdgeMoveTestWidget from "./EdgeMoveTestWidget";
 import CenterPieceWidget from "./CenterPieceWidget";
+import MusicGridWidget from "./MusicGridWidget"
 
 export const WIDGET_REGISTRY = {
   surface: { title: "Magnetic Field", Component: SurfaceWidget },
@@ -23,7 +24,8 @@ export const WIDGET_REGISTRY = {
   center_piece: { title: "Center Piece", Component: CenterPieceWidget },
   rgb: { title: "RGB Underglow", Component: RgbWidget },
   serial: { title: "Serial Console", Component: SerialWidget },
-  spaced_coils: { title: "Spaced Coil Grid", Component: SpacedCoilsWidget }
+  spaced_coils: { title: "Spaced Coil Grid", Component: SpacedCoilsWidget },
+  music: {title: "Music Grid", Component: MusicGridWidget}
 } as const;
 
 export type WidgetId = keyof typeof WIDGET_REGISTRY;

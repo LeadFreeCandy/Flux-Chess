@@ -44,6 +44,13 @@ struct SetRGBRequest {
   uint8_t b;
 };
 
+struct PlayNoteRequest {
+  uint8_t x;
+  uint8_t y;
+  uint16_t freq_hz;
+  uint16_t duration_ms;
+};
+
 // ── Responses ─────────────────────────────────────────────────
 
 struct ShutdownResponse {
@@ -243,3 +250,4 @@ struct MoveMultiRequest {
 // API_COMMAND(diagonal_test, POST, /api/diagonal_test, DiagonalTestRequest, DiagonalTestResponse)
 // API_COMMAND(move_multi, POST, /api/move_multi, MoveMultiRequest, MoveResponse)
 // API_COMMAND(edge_move_test, POST, /api/edge_move_test, MoveMultiRequest, DiagonalTestResponse)
+// API_COMMAND(play_note, POST, /api/play_note, PlayNoteRequest, PulseCoilResponse)

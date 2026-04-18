@@ -2126,6 +2126,32 @@ public:
     return res;
   }
 
+  // ── Music / Audio ──────────────────────────────────────────
+  PulseCoilResponse playNote(uint8_t x, uint8_t y, uint16_t freq_hz, uint16_t duration_ms) {
+    PulseCoilResponse res = { false, PulseError::NONE };
+
+    if (x >= GRID_COLS || y >= GRID_ROWS) { 
+        res.error = PulseError::INVALID_COIL; 
+        return res; 
+    }
+    
+    int8_t bit = coordToBit(x, y);
+    if (bit < 0) { 
+        res.error = PulseError::INVALID_COIL; 
+        return res; 
+    }
+
+    // Duty cycle of ~128 is "max"
+    // can turn this into a variable
+    if (!hw_.playNote((uint8_t)bit, freq_hz, duration_ms, 128)) { 
+        res.error = PulseError::THERMAL_LIMIT; 
+        return res; 
+    }
+
+    res.success = true;
+    return res;
+  }
+
   // ── Board State ───────────────────────────────────────────
 
   GetBoardStateResponse getBoardState() {
